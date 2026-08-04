@@ -106,14 +106,24 @@ Same JSON structure as above.
 
 ## FAQ
 
-**Do I need a separate API key?**  
-Yes, any OpenAI-compatible gateway (DeepSeek, Together, OpenRouter, or your own). The worker routes tasks there automatically.
+**Which gateway should I use?**  
 
-**Will my code be safe?**  
-Tasks run inside `SANDBOX_ROOT`. Secrets are redacted from logs.
+| Provider | Price (1M tokens) | Best for | Sign up |
+|----------|-------------------|----------|---------|
+| **DeepSeek** | $0.27 in, $1.10 out | Best price | https://platform.deepseek.com |
+| **OpenRouter** | Varies (200+ models) | Auto-routing | https://openrouter.ai/keys |
+| **Together AI** | $0.18 in, $0.18 out | Free trial | https://api.together.ai/signin |
+
+DeepSeek recommended: cheapest, reliable, easy key.
 
 **What if the cheap gateway fails?**  
-Automatic fallback to backup gateway. See [docs/advanced-config.md](docs/advanced-config.md).
+Automatic fallback. Set `FALLBACK_BASE_URL` / `FALLBACK_API_KEY` in `.env` for backup.
+
+**Is my code safe?**  
+Tasks run inside `SANDBOX_ROOT`. Secrets are redacted from logs. Your code never leaves your chosen gateway.
+
+**How much will I save?**  
+Heavy user ($100+/mo): 80-95% off. That's $80-95/month back in your pocket.
 
 ---
 

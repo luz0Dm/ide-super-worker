@@ -12,21 +12,25 @@ import * as readline from "node:readline";
 
 // --- Configuration ---
 const METRICS_FILE = process.env.WORKER_METRICS_FILE || path.join(process.cwd(), ".worker-metrics.jsonl");
+const BASELINE_MODEL = process.env.BASELINE_MODEL || "claude-sonnet";
 
 // --- Pricing (USD per 1M tokens) ---
-const PRICING: Record<string, { input: number; output: number; cache: number }> = {
-  // Baseline: expensive models you'd otherwise use
-  "claude-sonnet": { input: 3.0, output: 15.0, cache: 0.3 },
-  "claude-opus": { input: 15.0, output: 75.0, cache: 1.5 },
-  "gpt-4o": { input: 2.5, output: 10.0, cache: 1.25 },
-  "gpt-4-turbo": { input: 10.0, output: 30.0, cache: 2.5 },
-  // Cheap models the worker actually uses
-  "deepseek-v4-flash": { input: 0.27, output: 1.10, cache: 0.07 },
-  "deepseek-v4-pro": { input: 0.435, output: 0.87, cache: 0.0036 },
-  "qwen": { input: 0.27, output: 1.10, cache: 0.07 },
+const PRICING: Record<string, { input: number; output: number; cache: number; label: string }> = {
+  "claude-sonnet": { input: 3.0, output: 15.0, cache: 0.3, label: "Claude Sonnet" },
+  "claude-opus": { input: 15.0, output: 75.0, cache: 1.5, label: "Claude Opus" },
+  "gpt-4o": { input: 2.5, output: 10.0, cache: 1.25, label: "GPT-4o" },
+  "gpt-4-turbo": { input: 10.0, output: 30.0, cache: 2.5, label: "GPT-4 Turbo" },
+  "deepseek-chat": { input: 0.27, output: 1.10, cache: 0.07, label: "DeepSeek" },
+  "deepseek-v4-flash": { input: 0.27, output: 1.10, cache: 0.07, label: "DeepSeek" },
+  "deepseek-v4-pro": { input: 0.435, output: 0.87, cache: 0.0036, label: "DeepSeek Pro" },
+  "qwen": { input: 0.27, output: 1.10, cache: 0.07, label: "Qwen" },
+  "auto": { input: 0.50, output: 1.50, cache: 0.10, label: "Mixed" },
 };
 
-const BASELINE_MODEL = process.env.BASELINE_MODEL || "claude-sonnet";
+// --- Goals ---
+const COFFEE_PRICE = 4.50;
+const STARTER_SAVINGS_TARGET = 5.0;
+const MONTHLY_GROWTH_RATE = 0.15;
 
 // --- Types ---
 interface MetricsRow {
@@ -50,6 +54,11 @@ interface SavingsStats {
   costWithWorker: number;
   totalSavings: number;
   savingsPercent: number;
+  coffeeCups: number;
+  projectPerDay: number;
+  daysToTarget: number;
+  firstSeen: string;
+  lastSeen: string;
   last24h: { calls: number; savings: number };
   topTools: Record<string, number>;
   byModel: Record<string, { tokens: number; cost: number }>;
@@ -86,6 +95,8 @@ function calculateSavings(rows: MetricsRow[]): SavingsStats {
   let last24hSavings = 0;
   const now = Date.now();
   const oneDayMs = 24 * 60 * 60 * 1000;
+  let firstSeen = "";
+  let lastSeen = "";
 
   for (const row of rows) {
     const prompt = row.prompt_tokens || 0;
@@ -94,6 +105,10 @@ function calculateSavings(rows: MetricsRow[]): SavingsStats {
     totalPromptTokens += prompt;
     totalCompletionTokens += completion;
     totalCacheTokens += cached;
+
+    // Track time range
+    if (!firstSeen || row.ts < firstSeen) firstSeen = row.ts;
+    if (!lastSeen || row.ts > lastSeen) lastSeen = row.ts;
 
     const modelName = row.model || "deepseek-v4-flash";
     const modelPricing = PRICING[modelName] || PRICING["deepseek-v4-flash"];
@@ -125,6 +140,15 @@ function calculateSavings(rows: MetricsRow[]): SavingsStats {
     }
   }
 
+  const totalSavings = baselineCost - actualCost;
+  const coffeeCups = Math.floor(totalSavings / COFFEE_PRICE);
+  const daysSinceFirst = firstSeen
+    ? Math.max(1, (now - new Date(firstSeen).getTime()) / oneDayMs)
+    : 1;
+  const projectPerDay = totalSavings / daysSinceFirst;
+  const daysToTarget =
+    projectPerDay > 0 ? Math.max(0, Math.ceil((STARTER_SAVINGS_TARGET - totalSavings) / projectPerDay)) : 0;
+
   return {
     totalCalls: rows.length,
     totalPromptTokens,
@@ -132,8 +156,13 @@ function calculateSavings(rows: MetricsRow[]): SavingsStats {
     totalCacheTokens,
     costWithBaseline: baselineCost,
     costWithWorker: actualCost,
-    totalSavings: baselineCost - actualCost,
+    totalSavings,
     savingsPercent: baselineCost > 0 ? ((baselineCost - actualCost) / baselineCost) * 100 : 0,
+    coffeeCups,
+    projectPerDay,
+    daysToTarget,
+    firstSeen,
+    lastSeen,
     last24h: { calls: last24hCalls, savings: last24hSavings },
     topTools,
     byModel,
@@ -161,35 +190,54 @@ function drawBar(percent: number, width: number = 30): string {
 function renderDashboard(stats: SavingsStats): string {
   const lines: string[] = [];
   lines.push("");
-  lines.push("╔══════════════════════════════════════════════════════════╗");
-  lines.push("║          IDE Super Worker - Cost Savings Dashboard      ║");
-  lines.push("╠══════════════════════════════════════════════════════════╣");
-  lines.push("║                                                        ║");
-  lines.push(`║  TOTAL SAVINGS: ${formatCurrency(stats.totalSavings).padEnd(10)} ${drawBar(stats.savingsPercent)} ${stats.savingsPercent.toFixed(0)}%  ║`);
-  lines.push("║                                                        ║");
-  lines.push(`║  You would have spent:  ${formatCurrency(stats.costWithBaseline).padEnd(12)}                       ║`);
-  lines.push(`║  You actually spent:    ${formatCurrency(stats.costWithWorker).padEnd(12)}                       ║`);
-  lines.push("║                                                        ║");
-  lines.push("╠══════════════════════════════════════════════════════════╣");
-  lines.push(`║  Total API Calls:     ${stats.totalCalls.toString().padEnd(12)}                       ║`);
-  lines.push(`║  Total Tokens:        ${formatTokens(stats.totalPromptTokens + stats.totalCompletionTokens).padEnd(12)}                       ║`);
-  lines.push(`║  Input Tokens:        ${formatTokens(stats.totalPromptTokens).padEnd(12)}                       ║`);
-  lines.push(`║  Output Tokens:       ${formatTokens(stats.totalCompletionTokens).padEnd(12)}                       ║`);
-  lines.push("║                                                        ║");
-  lines.push("╠══════════════════════════════════════════════════════════╣");
-  lines.push("║  Last 24 Hours:                                        ║");
-  lines.push(`║    Calls: ${stats.last24h.calls.toString().padEnd(8)}  Savings: ${formatCurrency(stats.last24h.savings).padEnd(12)}             ║`);
-  lines.push("║                                                        ║");
+  lines.push("  ===============================================");
+  lines.push("    IDE Super Worker - Cost Savings Dashboard");
+  lines.push("  ===============================================");
+  lines.push("");
+  lines.push("    " + drawBar(stats.savingsPercent) + " " + stats.savingsPercent.toFixed(0) + "% saved");
+  lines.push("");
+  lines.push("    Saved this month:    " + padRight(formatCurrency(stats.totalSavings), 18) + emojiForSavings(stats.totalSavings));
+  lines.push("    Would have cost:     " + padRight(formatCurrency(stats.costWithBaseline), 18) + "without worker");
+  lines.push("    Actually spent:      " + padRight(formatCurrency(stats.costWithWorker), 18) + "with worker");
+  lines.push("");
+  lines.push("  -----------------------------------------------");
+  lines.push("    REWARD EQUIVALENTS");
+  lines.push("  -----------------------------------------------");
+  lines.push("");
+  if (stats.coffeeCups > 0) {
+    lines.push("    That's " + stats.coffeeCups + " cups of coffee."
+              + (stats.coffeeCups >= 3 ? " Go grab one!" : " Keep going!"));
+  } else {
+    lines.push("    " + formatCurrency(STARTER_SAVINGS_TARGET - stats.totalSavings)
+              + " to your first cup of coffee.");
+    if (stats.daysToTarget > 0 && stats.daysToTarget <= 7) {
+      lines.push("    At this rate: " + stats.daysToTarget + " day" + (stats.daysToTarget > 1 ? "s" : "") + " to go.");
+    }
+  }
+  lines.push("");
+  lines.push("  -----------------------------------------------");
+  lines.push("    ACTIVITY");
+  lines.push("  -----------------------------------------------");
+  lines.push("");
+  lines.push("    Total calls:         " + padRight(stats.totalCalls.toString(), 10)
+            + "24h calls: " + stats.last24h.calls);
+  lines.push("    Total tokens:        " + padRight(formatTokens(stats.totalPromptTokens + stats.totalCompletionTokens), 10)
+            + "24h saved: " + formatCurrency(stats.last24h.savings));
 
   const modelEntries = Object.entries(stats.byModel);
   if (modelEntries.length > 0) {
-    lines.push("╠══════════════════════════════════════════════════════════╣");
-    lines.push("║  Models Used:                                          ║");
+    lines.push("");
+    lines.push("  -----------------------------------------------");
+    lines.push("    MODELS USED");
+    lines.push("  -----------------------------------------------");
+    lines.push("");
     for (const [model, data] of modelEntries) {
-      const shortModel = model.length > 20 ? model.slice(0, 17) + "..." : model;
-      lines.push(`║    ${shortModel.padEnd(22)} ${formatTokens(data.tokens).padEnd(8)} ${formatCurrency(data.cost).padEnd(8)}     ║`);
+      const pricing = PRICING[model];
+      const label = pricing ? pricing.label : model;
+      lines.push("    " + padRight(label, 20)
+                + padRight(formatTokens(data.tokens), 8)
+                + formatCurrency(data.cost));
     }
-    lines.push("║                                                        ║");
   }
 
   const sortedTools = Object.entries(stats.topTools)
@@ -197,36 +245,53 @@ function renderDashboard(stats: SavingsStats): string {
     .slice(0, 5);
 
   if (sortedTools.length > 0) {
-    lines.push("╠══════════════════════════════════════════════════════════╣");
-    lines.push("║  Top Tools:                                            ║");
+    lines.push("");
+    lines.push("  -----------------------------------------------");
+    lines.push("    TOP TOOLS");
+    lines.push("  -----------------------------------------------");
+    lines.push("");
     for (const [tool, tokens] of sortedTools) {
-      lines.push(`║    ${tool.padEnd(20)} ${formatTokens(tokens).padEnd(10)}                    ║`);
+      lines.push("    " + padRight(tool, 20) + formatTokens(tokens));
     }
   }
 
-  lines.push("║                                                        ║");
-  lines.push("╚══════════════════════════════════════════════════════════╝");
   lines.push("");
-  lines.push("  Press 'q' to quit | Auto-refreshes every 5 seconds");
+  lines.push("  ===============================================");
+  lines.push("  Press 'q' to quit  |  Auto-refreshes every 5s");
   lines.push("");
   return lines.join("\n");
+}
+
+function emojiForSavings(savings: number): string {
+  if (savings >= 20) return "  That's a pizza.";
+  if (savings >= 10) return "  Nice.";
+  if (savings >= 5) return "  Keep going!";
+  return "";
+}
+
+function padRight(s: string, n: number): string {
+  while (s.length < n) s += " ";
+  return s;
 }
 
 function renderNoData(): string {
   return [
     "",
-    "╔══════════════════════════════════════════════════════════╗",
-    "║          IDE Super Worker - Cost Savings Dashboard      ║",
-    "╠══════════════════════════════════════════════════════════╣",
-    "║                                                        ║",
-    "║  No metrics data found yet.                            ║",
-    "║                                                        ║",
-    "║  Start using your AI assistant normally. The worker    ║",
-    "║  will automatically track your savings.               ║",
-    "║                                                        ║",
-    "║  Expected savings: 80-95% on bulk read/edit tasks      ║",
-    "║                                                        ║",
-    "╚══════════════════════════════════════════════════════════╝",
+    "  ===============================================",
+    "    IDE Super Worker - Cost Savings Dashboard",
+    "  ===============================================",
+    "",
+    "  Waiting for your first AI coding calls...",
+    "",
+    "  Use your IDE normally. The worker will track",
+    "  every cheap call and show your savings here.",
+    "",
+    "  Expected savings: 80-95% on bulk tasks.",
+    "",
+    "  Just saved enough for:",
+    "    [] Coffee   ($4.50) - coming soon!",
+    "",
+    "  Press 'q' to quit  |  Auto-refreshes every 5s",
     "",
   ].join("\n");
 }

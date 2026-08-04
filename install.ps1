@@ -1,158 +1,132 @@
 # ===========================================================================
 # IDE Super Worker - One-Click Installer (Windows)
-# Installs the MCP worker and auto-detects your IDE client
 #
-# Usage: powershell -ExecutionPolicy Bypass -c "iwr -useb https://raw.githubusercontent.com/dickmatrix/ide-super-worker/main/install.ps1 | iex"
-# ============================================================================
+# Usage:
+#   Default:    iwr -useb https://isw.deno.dev/install.ps1 | iex
+#   Fast mode:  iwr -useb https://isw.deno.dev/install.ps1 | iex -Preset deepseek
+#
+# Presets: deepseek, openrouter, together, custom
+# ===========================================================================
+
+param(
+    [ValidateSet("deepseek", "openrouter", "together", "custom", "")]
+    [string]$Preset = ""
+)
 
 $ErrorActionPreference = "Stop"
-
-# --- Configuration ---
-$RepoUrl = "https://github.com/dickmatrix/ide-super-worker.git"
 $InstallDir = "$env:USERPROFILE\.ide-super-worker"
-$ReleaseUrl = "https://api.github.com/repos/dickmatrix/ide-super-worker/releases/latest"
+$RepoUrl = "https://github.com/dickmatrix/ide-super-worker.git"
 
 # --- Banner ---
 Write-Host ""
-Write-Host "=============================================" -ForegroundColor Cyan
-Write-Host "  IDE Super Worker - One-Click Installer" -ForegroundColor Cyan
-Write-Host "  Cut your AI coding costs by up to 90%" -ForegroundColor Green
-Write-Host "=============================================" -ForegroundColor Cyan
+Write-Host "===============================================" -ForegroundColor Cyan
+Write-Host "  IDE Super Worker - Installer" -ForegroundColor Cyan
+Write-Host "  Cut AI coding costs by up to 90%" -ForegroundColor Green
+Write-Host "===============================================" -ForegroundColor Cyan
 Write-Host ""
 
-# --- Step 1: Check prerequisites ---
-Write-Host "[1/5] Checking prerequisites..." -ForegroundColor Yellow
-
-# Check Node.js
-try {
-    $nodeVersion = node --version 2>$null
-    if ($nodeVersion) {
-        Write-Host "      Node.js found: $nodeVersion" -ForegroundColor Green
-    } else {
-        Write-Host "      Node.js not found!" -ForegroundColor Red
-        Write-Host "      Please install Node.js 20+ from https://nodejs.org/" -ForegroundColor Red
-        exit 1
+# --- Built-in gateway presets ---
+$Presets = @{
+    deepseek = @{
+        Name = "DeepSeek (recommended)"
+        BaseUrl = "https://api.deepseek.com/v1"
+        Model = "deepseek-chat"
+        SignupUrl = "https://platform.deepseek.com"
+        Note = "$0.27/1M input, $1.10/1M output tokens"
     }
-} catch {
-    Write-Host "      Node.js not found!" -ForegroundColor Red
-    Write-Host "      Please install Node.js 20+ from https://nodejs.org/" -ForegroundColor Red
-    exit 1
+    openrouter = @{
+        Name = "OpenRouter (multi-model)"
+        BaseUrl = "https://openrouter.ai/api/v1"
+        Model = "auto"
+        SignupUrl = "https://openrouter.ai/keys"
+        Note = "Access 200+ models, pay-as-you-go"
+    }
+    together = @{
+        Name = "Together AI"
+        BaseUrl = "https://api.together.xyz/v1"
+        Model = "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo"
+        SignupUrl = "https://api.together.ai/signin"
+        Note = "$0.18/1M tokens, free trial available"
+    }
 }
 
-# Check Git
-try {
-    $gitVersion = git --version 2>$null
-    if ($gitVersion) {
-        Write-Host "      Git found: $gitVersion" -ForegroundColor Green
-    } else {
-        Write-Host "      Git not found!" -ForegroundColor Red
-        Write-Host "      Please install Git from https://git-scm.com/" -ForegroundColor Red
-        exit 1
-    }
-} catch {
-    Write-Host "      Git not found!" -ForegroundColor Red
-    Write-Host "      Please install Git from https://git-scm.com/" -ForegroundColor Red
-    exit 1
-}
-
+# --- Step 1: Prerequisites ---
+Write-Host "[1/4] Checking..." -ForegroundColor Yellow
+$nodeOk = $null -ne (Get-Command node -ErrorAction SilentlyContinue)
+$gitOk = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
+if (-not $nodeOk) { Write-Host "  Node.js missing: https://nodejs.org" -ForegroundColor Red; exit 1 }
+if (-not $gitOk) { Write-Host "  Git missing: https://git-scm.com" -ForegroundColor Red; exit 1 }
+Write-Host "  OK - node + git found" -ForegroundColor Green
 Write-Host ""
 
-# --- Step 2: Clone or update repo ---
-Write-Host "[2/5] Downloading IDE Super Worker..." -ForegroundColor Yellow
-
+# --- Step 2: Download ---
+Write-Host "[2/4] Downloading..." -ForegroundColor Yellow
 if (Test-Path "$InstallDir\.git") {
-    Write-Host "      Updating existing installation..." -ForegroundColor Gray
     Set-Location $InstallDir
-    git pull origin main 2>$null
+    git pull origin main 2>$null | Out-Null
 } else {
-    if (Test-Path $InstallDir) {
-        Remove-Item -Recurse -Force $InstallDir
+    if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir }
+    git clone --depth 1 $RepoUrl $InstallDir 2>$null | Out-Null
+}
+Set-Location $InstallDir
+npm install --silent 2>$null | Out-Null
+npm run build --silent 2>$null | Out-Null
+if (-not (Test-Path "dist\index.js")) { Write-Host "  Build failed!" -ForegroundColor Red; exit 1 }
+Write-Host "  OK - installed to $InstallDir" -ForegroundColor Green
+Write-Host ""
+
+# --- Step 3: Configure API Key ---
+Write-Host "[3/4] Configure API key..." -ForegroundColor Yellow
+Write-Host ""
+
+$selectedPreset = $null
+
+if ($Preset -and $Presets.ContainsKey($Preset)) {
+    $selectedPreset = $Presets[$Preset]
+} else {
+    Write-Host "  Choose your cheap model provider:" -ForegroundColor White
+    Write-Host ""
+    Write-Host "    1) DeepSeek    - $0.27/1M input tokens (best price)" -ForegroundColor Cyan
+    Write-Host "    2) OpenRouter  - 200+ models, auto-routing" -ForegroundColor Cyan
+    Write-Host "    3) Together AI - $0.18/1M tokens, free trial" -ForegroundColor Cyan
+    Write-Host "    4) Custom      - I have my own gateway" -ForegroundColor Cyan
+    Write-Host ""
+
+    $choice = Read-Host "  Enter 1-4 (default: 1)"
+    switch ($choice) {
+        "2" { $selectedPreset = $Presets["openrouter"] }
+        "3" { $selectedPreset = $Presets["together"] }
+        "4" { $selectedPreset = $null }
+        default { $selectedPreset = $Presets["deepseek"] }
     }
-    git clone $RepoUrl $InstallDir
-    Set-Location $InstallDir
 }
 
 Write-Host ""
 
-# --- Step 3: Install dependencies ---
-Write-Host "[3/5] Installing dependencies..." -ForegroundColor Yellow
-npm install --silent 2>$null
-npm run build --silent 2>$null
+$BaseUrl = ""
+$ApiKey = ""
+$Model = ""
 
-if (-not (Test-Path "dist\index.js")) {
-    Write-Host "      Build failed! Check errors above." -ForegroundColor Red
-    exit 1
-}
-Write-Host "      Build successful!" -ForegroundColor Green
-Write-Host ""
-
-# --- Step 4: Detect IDE clients ---
-Write-Host "[4/5] Detecting IDE clients..." -ForegroundColor Yellow
-
-$DetectedClients = @()
-
-# Cursor
-$cursorConfig = "$env:USERPROFILE\.cursor\mcp.json"
-if (Test-Path (Split-Path $cursorConfig)) {
-    $DetectedClients += @{ Name = "Cursor"; ConfigPath = $cursorConfig; Type = "cursor" }
-    Write-Host "      Found: Cursor" -ForegroundColor Green
-}
-
-# VS Code
-$vsCodeConfig = "$env:USERPROFILE\.vscode\mcp.json"
-if (Test-Path (Split-Path $vsCodeConfig)) {
-    $DetectedClients += @{ Name = "VS Code"; ConfigPath = $vsCodeConfig; Type = "vscode" }
-    Write-Host "      Found: VS Code" -ForegroundColor Green
-}
-
-# TRAE
-$traeConfig = "$env:USERPROFILE\.trae\mcp.json"
-if (Test-Path (Split-Path $traeConfig)) {
-    $DetectedClients += @{ Name = "TRAE"; ConfigPath = $traeConfig; Type = "trae" }
-    Write-Host "      Found: TRAE" -ForegroundColor Green
-}
-
-# Claude Desktop
-$claudeConfig = "$env:APPDATA\Claude\claude_desktop_config.json"
-if (Test-Path (Split-Path $claudeConfig)) {
-    $DetectedClients += @{ Name = "Claude Desktop"; ConfigPath = $claudeConfig; Type = "claude" }
-    Write-Host "      Found: Claude Desktop" -ForegroundColor Green
-}
-
-# Windsurf
-$windsurfConfig = "$env:USERPROFILE\.windsurf\mcp.json"
-if (Test-Path (Split-Path $windsurfConfig)) {
-    $DetectedClients += @{ Name = "Windsurf"; ConfigPath = $windsurfConfig; Type = "windsurf" }
-    Write-Host "      Found: Windsurf" -ForegroundColor Green
-}
-
-if ($DetectedClients.Count -eq 0) {
-    Write-Host "      No supported IDE detected." -ForegroundColor Yellow
-    Write-Host "      You can manually configure MCP later." -ForegroundColor Gray
+if ($selectedPreset) {
+    Write-Host "  Provider: $($selectedPreset.Name)" -ForegroundColor Green
+    Write-Host "  Pricing:  $($selectedPreset.Note)" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  Get your API key at: $($selectedPreset.SignupUrl)" -ForegroundColor Yellow
+    Write-Host ""
+    $BaseUrl = $selectedPreset.BaseUrl
+    $Model = $selectedPreset.Model
+    $ApiKey = Read-Host "  Paste your API key (or press Enter to configure later)"
 } else {
-    Write-Host "      Found $($DetectedClients.Count) IDE(s)" -ForegroundColor Green
+    $BaseUrl = Read-Host "  Gateway base URL"
+    $Model = Read-Host "  Model name (e.g. deepseek-chat)"
+    $ApiKey = Read-Host "  API key"
 }
-Write-Host ""
 
-# --- Step 5: Configure API key ---
-Write-Host "[5/5] Configure your cheap model gateway..." -ForegroundColor Yellow
-Write-Host ""
-Write-Host "      To save on costs, you need an OpenAI-compatible API key." -ForegroundColor White
-Write-Host "      Recommended providers (cheap, reliable):" -ForegroundColor White
-Write-Host "        - DeepSeek (https://platform.deepseek.com)" -ForegroundColor Gray
-Write-Host "        - OneAPI (any public instance)" -ForegroundColor Gray
-Write-Host "        - Your own OpenAI-compatible endpoint" -ForegroundColor Gray
-Write-Host ""
-
-$BaseUrl = Read-Host "      Enter your gateway base URL (or press Enter to skip)"
-if ($BaseUrl) {
-    $ApiKey = Read-Host "      Enter your API key"
-    
-    # Create .env file
+if ($ApiKey) {
     $envContent = @"
 ONEAPI_BASE_URL=$BaseUrl
 ONEAPI_API_KEY=$ApiKey
-CLAUDE_MODEL=deepseek-v4-flash
+CLAUDE_MODEL=$Model
 CLAUDE_CODE_MODEL=sonnet
 USE_OPENAI_ADAPTER=1
 SANDBOX_ROOT=$env:USERPROFILE
@@ -160,70 +134,74 @@ WORKER_LITE_LLM=0
 WORKER_METRICS_FILE=$InstallDir\.worker-metrics.jsonl
 "@
     Set-Content -Path "$InstallDir\.env" -Value $envContent
-    Write-Host "      Configuration saved!" -ForegroundColor Green
-} else {
-    Write-Host "      Skipped. You can configure later by editing .env" -ForegroundColor Gray
-}
-
-# --- Register MCP config for detected clients ---
-if ($DetectedClients.Count -gt 0 -and $BaseUrl) {
     Write-Host ""
-    Write-Host "Registering MCP server for detected IDEs..." -ForegroundColor Yellow
-    
-    $mcpServerEntry = @{
-        command = "node"
-        args = @("$InstallDir\dist\index.js")
-        cwd = $InstallDir
-        env = @{
-            ONEAPI_BASE_URL = $BaseUrl
-            ONEAPI_API_KEY = $ApiKey
-            CLAUDE_MODEL = "deepseek-v4-flash"
-            CLAUDE_CODE_MODEL = "sonnet"
-            USE_OPENAI_ADAPTER = "1"
-            SANDBOX_ROOT = $env:USERPROFILE
-            WORKER_LITE_LLM = "0"
-        }
-    }
+    Write-Host "  OK - API key saved" -ForegroundColor Green
+} else {
+    Write-Host ""
+    Write-Host "  Skipped. Configure later: $InstallDir\.env" -ForegroundColor Gray
+}
 
-    foreach ($client in $DetectedClients) {
-        $configDir = Split-Path $client.ConfigPath
-        if (-not (Test-Path $configDir)) {
-            New-Item -ItemType Directory -Path $configDir -Force | Out-Null
+Write-Host ""
+
+# --- Step 4: Register IDE ---
+Write-Host "[4/4] Register IDE server..." -ForegroundColor Yellow
+Write-Host ""
+
+$IDEs = @(
+    @{ Name = "Cursor"; Path = "$env:USERPROFILE\.cursor\mcp.json" },
+    @{ Name = "VS Code"; Path = "$env:USERPROFILE\.vscode\mcp.json" },
+    @{ Name = "TRAE"; Path = "$env:USERPROFILE\.trae\mcp.json" },
+    @{ Name = "Windsurf"; Path = "$env:USERPROFILE\.windsurf\mcp.json" },
+    @{ Name = "Claude Desktop"; Path = "$env:APPDATA\Claude\claude_desktop_config.json" }
+)
+
+$found = 0
+foreach ($ide in $IDEs) {
+    $dir = Split-Path $ide.Path
+    if (Test-Path $dir) {
+        $found++
+        Write-Host "  Found: $($ide.Name)" -ForegroundColor Green
+
+        $mcpEntry = @{
+            command = "node"
+            args = @("$InstallDir\dist\index.js")
+            cwd = $InstallDir
+            env = @{
+                ONEAPI_BASE_URL = $BaseUrl
+                ONEAPI_API_KEY = if ($ApiKey) { $ApiKey } else { "YOUR_KEY_HERE" }
+                CLAUDE_MODEL = $Model
+                CLAUDE_CODE_MODEL = "sonnet"
+                USE_OPENAI_ADAPTER = "1"
+                SANDBOX_ROOT = $env:USERPROFILE
+                WORKER_LITE_LLM = "0"
+                WORKER_METRICS_FILE = "$InstallDir\.worker-metrics.jsonl"
+            }
         }
-        
-        $existingConfig = @{}
-        if (Test-Path $client.ConfigPath) {
-            try {
-                $existingConfig = Get-Content $client.ConfigPath -Raw | ConvertFrom-Json -AsHashtable
-            } catch {}
+
+        $config = @{}
+        if (Test-Path $ide.Path) {
+            try { $config = Get-Content $ide.Path -Raw | ConvertFrom-Json -AsHashtable } catch {}
         }
-        
-        if (-not $existingConfig.ContainsKey("mcpServers")) {
-            $existingConfig["mcpServers"] = @{}
-        }
-        
-        $existingConfig["mcpServers"]["ide-super-worker"] = $mcpServerEntry
-        
-        $existingConfig | ConvertTo-Json -Depth 10 | Set-Content $client.ConfigPath
-        Write-Host "      Registered for $($client.Name)" -ForegroundColor Green
+        if (-not $config) { $config = @{} }
+        if (-not $config["mcpServers"]) { $config["mcpServers"] = @{} }
+        $config["mcpServers"]["ide-super-worker"] = $mcpEntry
+        $config | ConvertTo-Json -Depth 10 | Set-Content $ide.Path
     }
 }
 
-# --- Final summary ---
+if ($found -eq 0) {
+    Write-Host "  No IDE found. See README for manual setup." -ForegroundColor Gray
+}
+
+# --- Done ---
 Write-Host ""
-Write-Host "=============================================" -ForegroundColor Cyan
-Write-Host "  Installation Complete!" -ForegroundColor Green
-Write-Host "=============================================" -ForegroundColor Cyan
+Write-Host "===============================================" -ForegroundColor Cyan
+Write-Host "  Done!" -ForegroundColor Green
+Write-Host "===============================================" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "  Project installed at: $InstallDir" -ForegroundColor White
+Write-Host "  1. Restart your IDE" -ForegroundColor White
+Write-Host "  2. Ask AI to 'read a file' or 'run tests'" -ForegroundColor White
+Write-Host "  3. Watch savings:" -ForegroundColor White
 Write-Host ""
-Write-Host "  Next steps:" -ForegroundColor Yellow
-Write-Host "  1. Restart your IDE client" -ForegroundColor White
-Write-Host "  2. Ask your AI assistant to 'search for files' or 'read code'" -ForegroundColor White
-Write-Host "  3. Watch the cost savings in real-time!" -ForegroundColor White
-Write-Host ""
-Write-Host "  View savings dashboard:" -ForegroundColor Yellow
-Write-Host "  node $InstallDir\dist\dashboard.js" -ForegroundColor Gray
-Write-Host ""
-Write-Host "  Need help? https://github.com/dickmatrix/ide-super-worker/issues" -ForegroundColor Gray
+Write-Host "     node $InstallDir\dist\dashboard.js" -ForegroundColor Gray
 Write-Host ""

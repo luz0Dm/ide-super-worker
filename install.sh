@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 # ===========================================================================
 # IDE Super Worker - One-Click Installer (macOS/Linux)
-# Installs the MCP worker and auto-detects your IDE client
 #
-# Usage: curl -fsSL https://raw.githubusercontent.com/dickmatrix/ide-super-worker/main/install.sh | bash
+# Usage:
+#   Default:    curl -fsSL https://isw.deno.dev/install.sh | bash
+#   Fast mode:  curl -fsSL https://isw.deno.dev/install.sh | bash -s deepseek
+#
+# Presets: deepseek, openrouter, together, custom
 # ============================================================================
 
 set -e
 
-# --- Configuration ---
-REPO_URL="https://github.com/dickmatrix/ide-super-worker.git"
+PRESET="${1:-}"
 INSTALL_DIR="$HOME/.ide-super-worker"
+REPO_URL="https://github.com/dickmatrix/ide-super-worker.git"
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -18,197 +21,169 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 GRAY='\033[0;90m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 # --- Banner ---
 echo ""
-echo -e "${CYAN}=============================================${NC}"
-echo -e "${CYAN}  IDE Super Worker - One-Click Installer${NC}"
-echo -e "${GREEN}  Cut your AI coding costs by up to 90%${NC}"
-echo -e "${CYAN}=============================================${NC}"
+echo -e "${CYAN}===============================================${NC}"
+echo -e "${CYAN}  IDE Super Worker - Installer${NC}"
+echo -e "${GREEN}  Cut AI coding costs by up to 90%${NC}"
+echo -e "${CYAN}===============================================${NC}"
 echo ""
 
-# --- Step 1: Check prerequisites ---
-echo -e "${YELLOW}[1/5] Checking prerequisites...${NC}"
-
-if command -v node &> /dev/null; then
-    echo -e "${GREEN}      Node.js found: $(node --version)${NC}"
-else
-    echo -e "${RED}      Node.js not found!${NC}"
-    echo -e "${RED}      Please install Node.js 20+ from https://nodejs.org/${NC}"
-    exit 1
-fi
-
-if command -v git &> /dev/null; then
-    echo -e "${GREEN}      Git found: $(git --version)${NC}"
-else
-    echo -e "${RED}      Git not found!${NC}"
-    echo -e "${RED}      Please install Git from https://git-scm.com/${NC}"
-    exit 1
-fi
-
+# --- Step 1: Prerequisites ---
+echo -e "${YELLOW}[1/4] Checking...${NC}"
+command -v node >/dev/null 2>&1 || { echo -e "${RED}  Node.js missing: https://nodejs.org${NC}"; exit 1; }
+command -v git >/dev/null 2>&1 || { echo -e "${RED}  Git missing: https://git-scm.com${NC}"; exit 1; }
+echo -e "${GREEN}  OK - node + git found${NC}"
 echo ""
 
-# --- Step 2: Clone or update repo ---
-echo -e "${YELLOW}[2/5] Downloading IDE Super Worker...${NC}"
-
+# --- Step 2: Download ---
+echo -e "${YELLOW}[2/4] Downloading...${NC}"
 if [ -d "$INSTALL_DIR/.git" ]; then
-    echo -e "${GRAY}      Updating existing installation...${NC}"
-    cd "$INSTALL_DIR"
-    git pull origin main 2>/dev/null
+    cd "$INSTALL_DIR" && git pull origin main 2>/dev/null
 else
-    if [ -d "$INSTALL_DIR" ]; then
-        rm -rf "$INSTALL_DIR"
-    fi
-    git clone "$REPO_URL" "$INSTALL_DIR"
-    cd "$INSTALL_DIR"
+    [ -d "$INSTALL_DIR" ] && rm -rf "$INSTALL_DIR"
+    git clone --depth 1 "$REPO_URL" "$INSTALL_DIR" 2>/dev/null
 fi
-
-echo ""
-
-# --- Step 3: Install dependencies ---
-echo -e "${YELLOW}[3/5] Installing dependencies...${NC}"
+cd "$INSTALL_DIR"
 npm install --silent 2>/dev/null
 npm run build --silent 2>/dev/null
-
-if [ ! -f "dist/index.js" ]; then
-    echo -e "${RED}      Build failed! Check errors above.${NC}"
-    exit 1
-fi
-echo -e "${GREEN}      Build successful!${NC}"
+[ ! -f "dist/index.js" ] && { echo -e "${RED}  Build failed!${NC}"; exit 1; }
+echo -e "${GREEN}  OK - installed to ${INSTALL_DIR}${NC}"
 echo ""
 
-# --- Step 4: Detect IDE clients ---
-echo -e "${YELLOW}[4/5] Detecting IDE clients...${NC}"
-
-DETECTED_CLIENTS=()
-
-# Cursor
-if [ -d "$HOME/.cursor" ]; then
-    DETECTED_CLIENTS+=("Cursor:$HOME/.cursor/mcp.json")
-    echo -e "${GREEN}      Found: Cursor${NC}"
-fi
-
-# VS Code
-if [ -d "$HOME/.vscode" ]; then
-    DETECTED_CLIENTS+=("VS Code:$HOME/.vscode/mcp.json")
-    echo -e "${GREEN}      Found: VS Code${NC}"
-fi
-
-# TRAE
-if [ -d "$HOME/.trae" ]; then
-    DETECTED_CLIENTS+=("TRAE:$HOME/.trae/mcp.json")
-    echo -e "${GREEN}      Found: TRAE${NC}"
-fi
-
-# Claude Desktop (macOS)
-if [ -d "$HOME/Library/Application Support/Claude" ]; then
-    DETECTED_CLIENTS+=("Claude Desktop:$HOME/Library/Application Support/Claude/claude_desktop_config.json")
-    echo -e "${GREEN}      Found: Claude Desktop${NC}"
-fi
-
-# Windsurf
-if [ -d "$HOME/.windsurf" ]; then
-    DETECTED_CLIENTS+=("Windsurf:$HOME/.windsurf/mcp.json")
-    echo -e "${GREEN}      Found: Windsurf${NC}"
-fi
-
-if [ ${#DETECTED_CLIENTS[@]} -eq 0 ]; then
-    echo -e "${YELLOW}      No supported IDE detected.${NC}"
-    echo -e "${GRAY}      You can manually configure MCP later.${NC}"
-else
-    echo -e "${GREEN}      Found ${#DETECTED_CLIENTS[@]} IDE(s)${NC}"
-fi
-
+# --- Step 3: Configure API Key ---
+echo -e "${YELLOW}[3/4] Configure API key...${NC}"
 echo ""
 
-# --- Step 5: Configure API key ---
-echo -e "${YELLOW}[5/5] Configure your cheap model gateway...${NC}"
-echo ""
-echo -e "${NC}      To save on costs, you need an OpenAI-compatible API key.${NC}"
-echo -e "${NC}      Recommended providers (cheap, reliable):${NC}"
-echo -e "${GRAY}        - DeepSeek (https://platform.deepseek.com)${NC}"
-echo -e "${GRAY}        - OneAPI (any public instance)${NC}"
-echo -e "${GRAY}        - Your own OpenAI-compatible endpoint${NC}"
-echo ""
+# Suggest presets
+show_menu() {
+    echo -e "${NC}  Choose your cheap model provider:${NC}"
+    echo ""
+    echo -e "${CYAN}    1) DeepSeek    - \$0.27/1M input (best price)${NC}"
+    echo -e "${CYAN}    2) OpenRouter  - 200+ models, auto-routing${NC}"
+    echo -e "${CYAN}    3) Together AI - \$0.18/1M tokens, free trial${NC}"
+    echo -e "${CYAN}    4) Custom      - I have my own gateway${NC}"
+    echo ""
+}
 
-read -p "      Enter your gateway base URL (or press Enter to skip): " BASE_URL
+BASE_URL=""
+API_KEY=""
+MODEL=""
+
+case "$PRESET" in
+    deepseek) BASE_URL="https://api.deepseek.com/v1"; MODEL="deepseek-chat" ;;
+    openrouter) BASE_URL="https://openrouter.ai/api/v1"; MODEL="auto" ;;
+    together) BASE_URL="https://api.together.xyz/v1"; MODEL="meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo" ;;
+    custom) ;;
+    *)
+        show_menu
+        read -p "  Enter 1-4 (default: 1): " choice
+        case "$choice" in
+            2) BASE_URL="https://openrouter.ai/api/v1"; MODEL="auto"; PRESET_NAME="OpenRouter" ;;
+            3) BASE_URL="https://api.together.xyz/v1"; MODEL="meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo"; PRESET_NAME="Together AI" ;;
+            4) ;;
+            *) BASE_URL="https://api.deepseek.com/v1"; MODEL="deepseek-chat"; PRESET_NAME="DeepSeek" ;;
+        esac
+        ;;
+esac
+
+if [ -z "$PRESET" ] || [ -n "$choice" ]; then
+    case "${PRESET:-$choice}" in
+        deepseek|1) PRESET_NAME="DeepSeek"; PRESET_URL="https://platform.deepseek.com" ;;
+        openrouter|2) PRESET_NAME="OpenRouter"; PRESET_URL="https://openrouter.ai/keys" ;;
+        together|3) PRESET_NAME="Together AI"; PRESET_URL="https://api.together.ai/signin" ;;
+    esac
+fi
+
 if [ -n "$BASE_URL" ]; then
-    read -p "      Enter your API key: " API_KEY
-    
+    echo -e "${GREEN}  Provider: ${PRESET_NAME}${NC}"
+    echo -e "${GRAY}  Get key:  ${PRESET_URL}${NC}"
+    echo ""
+    read -p "  Paste API key (or Enter to skip): " API_KEY
+else
+    read -p "  Gateway base URL: " BASE_URL
+    read -p "  Model name: " MODEL
+    read -p "  API key: " API_KEY
+fi
+
+if [ -n "$API_KEY" ]; then
     cat > "$INSTALL_DIR/.env" << EOF
 ONEAPI_BASE_URL=$BASE_URL
 ONEAPI_API_KEY=$API_KEY
-CLAUDE_MODEL=deepseek-v4-flash
+CLAUDE_MODEL=$MODEL
 CLAUDE_CODE_MODEL=sonnet
 USE_OPENAI_ADAPTER=1
 SANDBOX_ROOT=$HOME
 WORKER_LITE_LLM=0
 WORKER_METRICS_FILE=$INSTALL_DIR/.worker-metrics.jsonl
 EOF
-    echo -e "${GREEN}      Configuration saved!${NC}"
+    echo -e "${GREEN}  OK - saved${NC}"
 else
-    echo -e "${GRAY}      Skipped. You can configure later by editing .env${NC}"
+    echo -e "${GRAY}  Skipped. Configure later: ${INSTALL_DIR}/.env${NC}"
 fi
 
-# --- Register MCP config ---
-if [ ${#DETECTED_CLIENTS[@]} -gt 0 ] && [ -n "$BASE_URL" ]; then
-    echo ""
-    echo -e "${YELLOW}Registering MCP server for detected IDEs...${NC}"
-    
-    for client_entry in "${DETECTED_CLIENTS[@]}"; do
-        IFS=':' read -r name config_path <<< "$client_entry"
-        config_dir=$(dirname "$config_path")
+echo ""
+
+# --- Step 4: Register IDE ---
+echo -e "${YELLOW}[4/4] Register IDE server...${NC}"
+
+declare -A IDE_PATHS=(
+    ["Cursor"]="$HOME/.cursor/mcp.json"
+    ["VS Code"]="$HOME/.vscode/mcp.json"
+    ["TRAE"]="$HOME/.trae/mcp.json"
+    ["Windsurf"]="$HOME/.windsurf/mcp.json"
+    ["Claude Desktop"]="$HOME/Library/Application Support/Claude/claude_desktop_config.json"
+)
+
+for ide in "${!IDE_PATHS[@]}"; do
+    config_path="${IDE_PATHS[$ide]}"
+    config_dir=$(dirname "$config_path")
+    if [ -d "$config_dir" ]; then
+        echo -e "${GREEN}  Found: ${ide}${NC}"
         mkdir -p "$config_dir"
-        
-        if [ -f "$config_path" ]; then
-            existing=$(cat "$config_path")
-        else
-            existing='{}'
-        fi
-        
-        # Use jq if available, otherwise fallback to simple approach
-        if command -v jq &> /dev/null; then
-            new_config=$(echo "$existing" | jq --arg cmd "node" \
-                --arg cwd "$INSTALL_DIR" \
-                --arg args "$INSTALL_DIR/dist/index.js" \
-                --arg base_url "$BASE_URL" \
-                --arg api_key "$API_KEY" \
-                '.mcpServers["ide-super-worker"] = {
-                    "command": $cmd,
-                    "args": [$args],
-                    "cwd": $cwd,
-                    "env": {
-                        "ONEAPI_BASE_URL": $base_url,
-                        "ONEAPI_API_KEY": $api_key,
-                        "CLAUDE_MODEL": "deepseek-v4-flash",
-                        "CLAUDE_CODE_MODEL": "sonnet",
-                        "USE_OPENAI_ADAPTER": "1",
-                        "SANDBOX_ROOT": env.HOME,
-                        "WORKER_LITE_LLM": "0"
-                    }
-                }')
-            echo "$new_config" > "$config_path"
-        fi
-        echo -e "${GREEN}      Registered for ${name}${NC}"
-    done
-fi
 
-# --- Final summary ---
+        key_value="${API_KEY:-YOUR_KEY_HERE}"
+        if command -v jq >/dev/null 2>&1; then
+            jq --arg cmd "node" --arg args "$INSTALL_DIR/dist/index.js" \
+               --arg cwd "$INSTALL_DIR" \
+               --arg base_url "$BASE_URL" --arg api_key "$key_value" \
+               --arg model "$MODEL" \
+               '.mcpServers["ide-super-worker"] = {
+                   "command": $cmd, "args": [$args], "cwd": $cwd,
+                   "env": {
+                       "ONEAPI_BASE_URL": $base_url, "ONEAPI_API_KEY": $api_key,
+                       "CLAUDE_MODEL": $model, "CLAUDE_CODE_MODEL": "sonnet",
+                       "USE_OPENAI_ADAPTER": "1", "SANDBOX_ROOT": env.HOME,
+                       "WORKER_LITE_LLM": "0"
+                   }
+               }' "$config_path" > "$config_path.tmp" 2>/dev/null && mv "$config_path.tmp" "$config_path" \
+               || echo "{}" | jq --arg cmd "node" --arg args "$INSTALL_DIR/dist/index.js" \
+               --arg cwd "$INSTALL_DIR" --arg base_url "$BASE_URL" --arg api_key "$key_value" \
+               --arg model "$MODEL" \
+               '{mcpServers: {"ide-super-worker": {
+                   "command": $cmd, "args": [$args], "cwd": $cwd,
+                   "env": {
+                       "ONEAPI_BASE_URL": $base_url, "ONEAPI_API_KEY": $api_key,
+                       "CLAUDE_MODEL": $model, "CLAUDE_CODE_MODEL": "sonnet",
+                       "USE_OPENAI_ADAPTER": "1", "SANDBOX_ROOT": env.HOME,
+                       "WORKER_LITE_LLM": "0"
+                   }
+               }}}' > "$config_path"
+        fi
+    fi
+done
+
+# --- Done ---
 echo ""
-echo -e "${CYAN}=============================================${NC}"
-echo -e "${GREEN}  Installation Complete!${NC}"
-echo -e "${CYAN}=============================================${NC}"
+echo -e "${CYAN}===============================================${NC}"
+echo -e "${GREEN}  Done!${NC}"
+echo -e "${CYAN}===============================================${NC}"
 echo ""
-echo -e "${NC}  Project installed at: ${INSTALL_DIR}${NC}"
+echo -e "${NC}  1. Restart your IDE${NC}"
+echo -e "${NC}  2. Ask AI to 'read a file' or 'run tests'${NC}"
+echo -e "${NC}  3. Watch savings:${NC}"
 echo ""
-echo -e "${YELLOW}  Next steps:${NC}"
-echo -e "${NC}  1. Restart your IDE client${NC}"
-echo -e "${NC}  2. Ask your AI assistant to 'search for files' or 'read code'${NC}"
-echo -e "${NC}  3. Watch the cost savings in real-time!${NC}"
-echo ""
-echo -e "${YELLOW}  View savings dashboard:${NC}"
-echo -e "${GRAY}  node ${INSTALL_DIR}/dist/dashboard.js${NC}"
-echo ""
-echo -e "${GRAY}  Need help? https://github.com/dickmatrix/ide-super-worker/issues${NC}"
+echo -e "${GRAY}     node ${INSTALL_DIR}/dist/dashboard.js${NC}"
 echo ""
