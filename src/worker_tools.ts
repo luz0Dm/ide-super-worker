@@ -109,7 +109,7 @@ function lineWindows(lines: string[], needles: string[], windowSize: number): Ar
   const structureRe = /^\s*(export\s+)?(async\s+)?(function|class|interface|type|const|let|var)\s+|^\s*(describe|it|test)\s*\(/;
 
   lines.forEach((line, index) => {
-    if ((needleRe && needleRe.test(line)) || structureRe.test(line)) {
+    if ((needleRe && needleRe.test(line)) || (!needleRe && structureRe.test(line))) {
       for (let cursor = Math.max(0, index - windowSize); cursor <= Math.min(lines.length - 1, index + windowSize); cursor += 1) {
         wanted.add(cursor);
       }
@@ -302,7 +302,7 @@ export async function digestDiff(args: Record<string, unknown>): Promise<Record<
   if (redTeamRequested && !LITE_LLM_ENABLED) {
     review = {
       verdict: "disabled",
-      reason: "WORKER_LITE_LLM=0 disables lite-LLM judgment; judge this diff in the main thread from the digest and the diff artifact."
+      reason: "Worker LLM judgment is disabled by default; judge this diff in the main model from the digest and the diff artifact."
     };
   } else if (redTeamRequested) {
     const raw = await reviewDirect({
@@ -597,8 +597,8 @@ export async function draftFromChanges(args: Record<string, unknown>): Promise<R
     return attachReceipt(
       {
         status: "rejected",
-        reason: "draft uses the lite-LLM lane, which is disabled by WORKER_LITE_LLM=0",
-        required_action: "Run diff_digest and draft the text in the main thread from the digest and artifact."
+        reason: "draft uses the worker-LLM lane, which is disabled by default",
+        required_action: "Run diff_digest and draft the text in the main model from the digest and artifact."
       },
       { tool: "draft", category: "draft", input: args, output: "disabled" }
     );

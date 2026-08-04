@@ -70,9 +70,7 @@ const requiredCategories = listArg("required-categories", [
   "search",
   "context_pack",
   "command_digest",
-  "diff_digest",
-  "analysis",
-  "review"
+  "diff_digest"
 ]);
 const unsupportedArgs = cliArgs.filter(
   (item) => item.startsWith("--") && !item.startsWith("--since-minutes=") && !item.startsWith("--required-categories=")

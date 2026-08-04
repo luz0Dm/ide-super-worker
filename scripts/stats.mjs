@@ -108,13 +108,14 @@ const receiptTotals = {
   summaryBytes: 0,
   artifactRows: 0,
   abnormal: { accept: 0, repair: 0, escalate: 0, reject: 0 },
-  largeWithoutArtifact: []
+  largeWithoutArtifact: [],
+  payloadViolations: []
 };
 const receiptArtifactMinBytes = Number.isFinite(Number(process.env.WORKER_RECEIPT_ARTIFACT_MIN_BYTES))
   ? Number(process.env.WORKER_RECEIPT_ARTIFACT_MIN_BYTES)
   : 32_000;
 const LARGE_WITHOUT_ARTIFACT_SAMPLE_MAX = 50;
-const artifactRequiredCategories = new Set(["context_pack", "diff_digest", "command_digest"]);
+const artifactRequiredCategories = new Set(["context_pack", "diff_digest", "command_digest", "job_control", "search"]);
 let rows = 0;
 
 function recordToolAudit({ category, tool, route = "worker", status = "ok", redTeam = false }) {
@@ -202,6 +203,19 @@ for (const metricFile of metricFiles) {
         if (refs.length > 0) receiptTotals.artifactRows += 1;
         const abnormalVerdict = String(receipt.abnormal?.verdict || "");
         if (abnormalVerdict in receiptTotals.abnormal) receiptTotals.abnormal[abnormalVerdict] += 1;
+        const abnormalReason = String(receipt.abnormal?.reason_code || "");
+        if (
+          (abnormalReason === "oversized_summary" || abnormalReason === "missing_artifact") &&
+          receiptTotals.payloadViolations.length < LARGE_WITHOUT_ARTIFACT_SAMPLE_MAX
+        ) {
+          receiptTotals.payloadViolations.push({
+            category,
+            tool: row.tool || receipt.tool || "unknown",
+            reason: abnormalReason,
+            summaryBytes: Number(receipt.summary_bytes) || 0,
+            outputBytes
+          });
+        }
         if (
           artifactRequiredCategories.has(category) &&
           outputBytes > receiptArtifactMinBytes &&
@@ -220,7 +234,7 @@ for (const metricFile of metricFiles) {
           ts: row.ts,
           category: row.category || "unknown",
           tool: row.tool || "unknown",
-          error_class: row.error_class || "",
+          error_class: row.error_class || row.failure_class || "",
           error_message: row.error_message || ""
         });
       }
@@ -359,12 +373,9 @@ const categoryTargets = {
   search: { min: 80, note: "file locating/search should be worker zero-LLM" },
   context_pack: { min: 70, note: "bulk file reading should use read_pack" },
   command_digest: { min: 70, note: "tests/build/lint output should use shell digest" },
-  diff_digest: { min: 60, note: "diff review intake should use diff_digest/review" },
-  review: { min: 60, note: "routine review should use cheap review lane" },
+  diff_digest: { min: 60, note: "diff review intake should use deterministic diff_digest evidence" },
   mechanical_edit: { min: 50, note: "deterministic replacements should use apply_edits" },
-  history: { min: 60, note: "git archaeology should use history" },
-  draft: { min: 80, note: "commit/PR/changelog drafts should use draft" },
-  analysis: { min: 60, note: "read-only explanations should use analyze/read_pack" }
+  history: { min: 60, note: "git archaeology should use history" }
 };
 
 const parseListEnv = (name, fallback) => {
@@ -539,7 +550,7 @@ if (gateEnabled) {
   const diffDigestRedTeamCalls = [...toolGroups.values()]
     .filter((group) => group.tool === "diff_digest")
     .reduce((sum, group) => sum + group.redTeam, 0);
-  const liteLlmDisabled = /^(0|false|no|off)$/i.test(String(process.env.WORKER_LITE_LLM ?? "").trim());
+  const liteLlmDisabled = !/^(1|true|yes|on)$/i.test(String(process.env.WORKER_LITE_LLM ?? "").trim());
   console.log(`lite_llm_disabled\t${liteLlmDisabled}`);
   const redTeamRatio = diffDigestWorkerCalls > 0 ? (diffDigestRedTeamCalls / diffDigestWorkerCalls) * 100 : 0;
   console.log(`diff_digest_red_team_ratio\t${redTeamRatio.toFixed(1)}%`);
@@ -549,6 +560,11 @@ if (gateEnabled) {
   for (const sample of receiptTotals.largeWithoutArtifact) {
     gateFailures.push(
       `${sample.category}/${sample.tool} receipt output ${sample.outputBytes} bytes exceeds ${receiptArtifactMinBytes} without artifact_ref`
+    );
+  }
+  for (const sample of receiptTotals.payloadViolations) {
+    gateFailures.push(
+      `${sample.category}/${sample.tool} receipt ${sample.reason} (summary=${sample.summaryBytes}, output=${sample.outputBytes})`
     );
   }
 

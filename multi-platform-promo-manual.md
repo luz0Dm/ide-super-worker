@@ -9,11 +9,11 @@
 
 ### 中文口径
 
-不是让模型更便宜，是让贵的模型只做值钱的事。搜索零成本、只读分析一次便宜调用、重活异步委派、结果只拿证据不拿过程。
+不是把分析降级给便宜模型，而是让 Codex 主模型负责分析、判断和代码审阅。worker 默认只做确定性搜索、证据打包、检查与异步执行，主线程只拿可审计证据；历史 quality/fan-out 模块没有公开 MCP 入口，`WORKER_LITE_LLM=1` 只启用仍保留的 failure diagnosis、diff red-team 与 `draft` 能力。
 
 ### English
 
-Don't just use a cheaper model. Make the expensive one do only what's worth it. Zero-LLM search, one-call analysis, async delegation, compact evidence not full transcripts.
+Keep analysis, judgment, and code review in the Codex main model. By default, the worker handles deterministic search, evidence packing, checks, and async execution. Historical quality/fan-out modules have no public MCP entry; `WORKER_LITE_LLM=1` only enables the remaining failure-diagnosis, diff red-team, and `draft` features.
 
 ### 核心数据
 
@@ -100,9 +100,9 @@ npm run smoke
 | Work type | Traditional | IDE Super Worker | Cost |
 |-----------|------------|-----------------|------|
 | Search code | LLM reads files | `search` 0 LLM calls | Free |
-| Explain code | Full agent loop | `analyze` 1 cheap call | Low |
+| Explain code | Full agent loop | `read_pack` returns deterministic evidence; Codex explains | 0 worker-LLM calls |
 | Fix bugs | Premium retries loop | `start` async worker | Low |
-| Review code | Premium reads diff | `review` cheap gateway | Low |
+| Review code | Premium reads raw diff | `diff_digest` + `get_artifact_slice`; Codex reviews | Compact |
 | See result | Full diff ingested | `changed_files` only | Compact |
 ```
 
@@ -129,8 +129,9 @@ Release Notes 粘贴：
 ## What changed
 - Default `include_diff:false` — Codex gets changed_files + checks, not full patches
 - Zero-LLM `search` for repo discovery (0 tokens)
-- One-call `analyze` for read-only summaries on cheap gateway
-- `review` tool for cheap-gateway structured code review
+- Deterministic `read_pack` evidence for Codex-side analysis
+- Deterministic `diff_digest` + `get_artifact_slice` evidence for Codex-side code review
+- Historical quality/fan-out modules have no public MCP entry
 - `shell` with `digest:true` for compact test/build/lint output
 - JSONL metrics + `npm run stats` for real token accounting
 
@@ -164,9 +165,9 @@ After: 41,048 bytes.
 
 It's not just "use a cheaper model." It's route optimization:
 🔍 search: 0 LLM calls
-📖 analyze: 1 cheap call, read-only
+📖 read_pack: deterministic read-only evidence for Codex
 🔧 start: async worker does the heavy loop
-✅ review: cheap gateway code review
+✅ diff_digest/slice: deterministic diff evidence; Codex reviews
 📦 result: compact evidence, not full transcript
 
 Works with any OpenAI-compatible gateway (DeepSeek, OneAPI, local models).
@@ -206,9 +207,9 @@ Worker 方式 10 条命令：41,048 bytes
 
 不是"换个便宜模型"那么简单。是路由优化：
 🔍 search：零 LLM 调用
-📖 analyze：一次便宜调用，只读
+📖 read_pack：确定性只读证据，交给 Codex 分析
 🔧 start：异步 worker 跑重活
-✅ review：廉价网关代码审查
+✅ diff_digest/slice：确定性 diff 证据，交给 Codex 审阅
 📦 结果：只给证据，不给过程
 
 支持任何 OpenAI 兼容网关：DeepSeek、OneAPI、本地模型。
@@ -239,7 +240,7 @@ npm run doctor 验证
 
 实测 10 条命令：上下文从 20 万 bytes 降到 4 万。
 
-不是换便宜模型，是优化路由：贵的模型只做决策和审查，重活甩给便宜 worker。
+不是把判断交给便宜模型，而是优化路由：Codex 主模型做分析、决策和审查，搜索取证与执行循环交给 worker。
 
 支持 DeepSeek、OneAPI、本地模型。
 
@@ -305,9 +306,9 @@ Why this matters for r/LocalLLaMA: the worker uses an Anthropic-to-OpenAI adapte
 
 The routing split:
 - `search`: repo discovery, ZERO LLM calls
-- `analyze`: read-only summary, ONE cheap call
+- `read_pack`: deterministic read-only evidence for Codex analysis
 - `start`: async implementation loop on your cheap gateway
-- `review`: structured code review via cheap gateway
+- `diff_digest` + `get_artifact_slice`: deterministic diff evidence for Codex review
 - `get`/`wait`: compact evidence, not full diffs
 
 Measured: 80% less main-thread context for 10 commands. Est. $213-1068/mo saved.
@@ -371,9 +372,9 @@ https://v2ex.com → 发新帖 → 节点选 `#分享创造` 或 `#开源软件`
 核心思路不是"换个便宜模型"，而是"优化路由"：
 
 1. 搜代码 → 零 LLM 调用，本地搜索
-2. 只读分析 → 一次便宜调用
+2. 只读取证 → worker 确定性打包，Codex 主模型分析
 3. 修 bug → 异步 worker 跑，贵模型不参与
-4. 代码审查 → 廉价网关出结论
+4. 代码审查 → worker 提供确定性 diff/check 证据，Codex 主模型下结论
 5. 看结果 → 只给 changed_files + checks，不给大 diff
 
 实测数据（10 条 shell 命令）：
@@ -420,7 +421,7 @@ https://juejin.cn → 写文章
 
 这些事真的需要贵的模型来做吗？
 
-不需要。搜索可以零 LLM 调用，只读分析可以一次便宜调用，修 bug 可以异步委派给廉价 worker，代码审查可以用便宜模型出结论。
+不需要把所有中间过程塞给主线程。搜索、只读取证和检查可以由 worker 确定性完成，修 bug 可以异步委派给低成本 worker；分析、判断和代码审阅结论仍由 Codex 主模型负责。
 
 这就是 IDE Super Worker 的核心思路：不是换便宜模型，是优化路由。
 ```
@@ -428,7 +429,7 @@ https://juejin.cn → 写文章
 **文章结构（七节）：**
 
 1. 问题：贵模型在烧什么 token
-2. 解法：路由优化的五层架构（search/analyze/start/review/结果）
+2. 解法：路由优化的五层架构（search/read_pack/start/diff_digest/结果）
 3. 实测数据（10 条命令对比 + 月度省钱估算 + 对比图表）
 4. 架构设计（适配器、路由契约、熔断、可靠性档位、安全护栏）
 5. 快速上手（三步配置 + 配置示例 + 常见问题）
@@ -454,14 +455,14 @@ https://juejin.cn → 写文章
 ```
 Hey everyone 👋
 
-Just open-sourced IDE Super Worker — an async MCP worker that lets you delegate expensive coding work (file reading, repair loops, test runs, diff review) to a cheaper model gateway.
+Just open-sourced IDE Super Worker — an async MCP worker that delegates evidence collection, repair loops, and test runs while Codex retains analysis, judgment, and code review.
 
 The core idea: don't just use a cheaper model. Optimize the route.
 
 - `search`: 0 LLM calls for repo discovery
-- `analyze`: 1 cheap call for read-only summaries
+- `read_pack`: deterministic read-only evidence for Codex analysis
 - `start`: async implementation on cheap gateway
-- `review`: cheap gateway structured code review
+- `diff_digest` + `get_artifact_slice`: deterministic diff evidence for Codex review
 - Results: changed_files + checks, not full diffs
 
 Measured 80% context reduction on premium thread. Works with any OpenAI-compatible gateway (DeepSeek, OneAPI, local models, etc.).
@@ -483,9 +484,9 @@ Happy to help anyone get set up. The `npm run doctor` command validates your con
 核心理念：不是换个便宜模型，是优化路由。
 
 - `search`：零 LLM 调用搜代码
-- `analyze`：一次便宜调用做只读分析
+- `read_pack`：确定性打包只读证据，交给 Codex 分析
 - `start`：异步 worker 跑重活
-- `review`：廉价网关做代码审查
+- `diff_digest` + `get_artifact_slice`：确定性打包 diff 证据，交给 Codex 审阅
 - 结果：只给改动文件 + 检查结果，不塞大 diff
 
 实测主线程上下文降 80%。支持任何 OpenAI 兼容网关（DeepSeek、OneAPI、本地模型等）。
@@ -527,7 +528,7 @@ That's the routing advantage. Not cheaper model. Shorter route.
 **回答模板（搜索"AI 编程工具哪家省钱""Claude Code 太贵"等问题）：**
 
 ```
-先说结论：省钱的不是"换个便宜模型"，而是"优化路由"——让贵的模型只做值钱的事，重活甩给便宜的 worker。
+先说结论：省钱的不是把判断换成便宜模型，而是优化路由——Codex 主模型负责分析、判断和审阅，worker 负责确定性取证与低成本执行循环。
 
 我最近开源了一个工具叫 IDE Super Worker，实测能把 AI 编程的主线程上下文消耗降 80%。
 
@@ -536,9 +537,9 @@ That's the routing advantage. Not cheaper model. Shorter route.
 IDE Super Worker 的路由优化：
 
 1. 搜代码 → 零 LLM 调用，本地搜索，完全不花 token
-2. 只读分析 → 一次便宜调用，用 DeepSeek 等廉价模型
+2. 只读取证 → worker 确定性打包，Codex 主模型分析
 3. 修 bug → 异步 worker 跑，贵的模型不参与中间过程
-4. 代码审查 → 廉价网关出结构化结论
+4. 代码审查 → worker 提供结构化证据，Codex 主模型出结论
 5. 看结果 → 只给 changed_files + checks，不给大 diff
 
 实测数据（10 条 shell 命令）：
@@ -550,7 +551,7 @@ IDE Super Worker 的路由优化：
 - 用 Sonnet：约省 $213/月
 - 用 Opus：约省 $1,068/月
 
-关键区别：这不是"换个便宜模型替代 Claude"那么简单。便宜模型替代不了 Claude 的决策能力。但如果把读文件、跑测试、改代码这些重活交给便宜模型，让 Claude 只做规划和审查，效果一样好，成本砍 80%。
+关键区别：这不是“换个便宜模型替代主模型”。worker 默认确定性收集文件、diff 与检查证据，并可在低成本通道执行修改和测试循环；Codex 主模型保留规划、分析、判断和审阅。具体成本与质量应以实际任务验证。
 
 而且这个思路不限于 Codex。任何"读文件→修代码→看 diff"的 AI 编程工作流，都能用这套路由省 token。Cursor、Windsurf、Copilot，原理一样。
 
@@ -596,7 +597,7 @@ IDE Super Worker 的路由优化：
 正文结构：
 1. 你的钱烧在哪里（搜代码、修 bug、跑测试、看 diff）
 2. 省钱不是换便宜模型（路由优化 vs 模型降级）
-3. 五层省钱架构（search/analyze/start/review/结果）
+3. 五层省钱架构（search/read_pack/start/diff_digest/结果）
 4. 实测数据（202,899 → 41,048，降 80%，$213-1068/月）
 5. 不限于 Codex（适用所有 AI 编程工作流）
 6. 三步上手
@@ -607,7 +608,7 @@ IDE Super Worker 的路由优化：
 Day 4（英文）：
 
 ```
-💡 Tip: Use `include_diff:false` by default. Codex only needs to know WHAT changed and IF checks passed. Ask for the diff only when you actually need to review patch details.
+💡 Tip: Use `include_diff:false` for the first compact receipt, then request the full diff whenever the Codex main model needs patch-level review. Checks are evidence, not a review verdict.
 
 One flag. Massive context savings.
 ```
@@ -618,9 +619,9 @@ Day 5（英文）：
 🧠 The routing philosophy:
 
 search → 0 LLM (free)
-analyze → 1 cheap call (low)
+read_pack → deterministic evidence for Codex (0 worker-LLM calls)
 start → async worker (low)
-review → cheap gateway (low)
+diff_digest/slice → deterministic diff evidence for Codex
 result → compact evidence (saves premium)
 
 Premium model does decisions. Cheap model does muscle work.
@@ -642,9 +643,9 @@ Day 7（中文）：
 🧠 路由哲学：
 
 search → 零 LLM（免费）
-analyze → 一次便宜调用（低成本）
+read_pack → 确定性证据，交给 Codex 分析（0 worker-LLM）
 start → 异步 worker（低成本）
-review → 廉价网关（低成本）
+diff_digest/slice → 确定性 diff 证据，交给 Codex 审阅
 结果 → 紧凑证据（省贵的）
 
 贵的做决策。便宜的干重活。
@@ -700,7 +701,7 @@ review → 廉价网关（低成本）
 
 🤔 怎么做到的？
 不是换便宜模型！是优化路由！
-让贵的模型只做决策和审查
+让 Codex 主模型负责分析、决策和审查
 重活（读文件、改代码、跑测试）甩给便宜的 worker
 
 📊 实测数据：
@@ -743,9 +744,9 @@ review → 廉价网关（低成本）
 
 换了 IDE Super Worker 后：
 ✅ 搜代码零 LLM 调用，0 token
-✅ 只读分析一次便宜调用
+✅ 只读取证由 worker 确定性完成
 ✅ 修 bug 异步 worker 跑
-✅ 代码审查廉价网关出结论
+✅ 代码审查由 Codex 主模型依据证据下结论
 ✅ 看结果只给证据，不给大 diff
 
 结果：月账单从 $800 降到 $160。省了 $640。
@@ -769,7 +770,7 @@ review → 廉价网关（低成本）
 直到发现了这个开源工具：IDE Super Worker
 
 它不换便宜模型，而是优化路由：
-让贵的模型只做值钱的事（决策、审查）
+让 Codex 主模型做值钱的事（分析、决策、审查）
 把重活（读文件、改代码、跑测试）甩给便宜的 worker
 
 实测数据：
@@ -834,7 +835,7 @@ AI 编程省钱神器，省 80% 上下文 = 省 80% 钱
 ```
 上一篇讲了 IDE Super Worker 的路由优化思路，这篇手把手教你配置。
 
-目标：让 Codex 把重活（读文件、修代码、跑测试）甩给 DeepSeek，自己只做决策和审查。
+目标：让 worker 确定性收集文件与检查证据，并在低成本通道执行修复循环；Codex 主模型负责分析、决策和审查。
 
 步骤 1：安装
 npm install && npm run build && npm run test
@@ -867,7 +868,7 @@ npm run doctor:network
 
 常见问题：
 Q: DeepSeek 能替代 Claude 写代码吗？
-A: 重活（读文件、改代码、跑测试）DeepSeek 完全够用。Claude 只做决策和审查。
+A: 低成本 worker 可承担修改和测试循环；文件与检查证据默认确定性收集。Codex 主模型仍负责分析、决策和审查，质量需按实际任务验证。
 Q: 延迟怎么样？
 A: 异步 worker 不阻塞主线程，延迟不影响 Codex 响应。
 Q: 怎么看省钱效果？
@@ -890,7 +891,7 @@ IDE Super Worker: an open-source MCP tool that cuts AI coding context usage 80% 
 
 ### Q: 这和直接用 DeepSeek 代替 Claude 有什么区别？
 
-换便宜模型只是降了单价，工作流还是一样的浪费：贵模型还是要读一堆文件、吞大 diff、跑修复循环。IDE Super Worker 优化的是路由：搜索零 token、只读分析一次便宜调用、重活异步委派给廉价 worker、结果只拿证据。贵模型只做决策和审查。省的不只是单价，更是 token 用量。
+换便宜模型只是降了单价。IDE Super Worker 优化的是路由：搜索与只读取证默认确定性执行，修复循环异步委派给低成本 worker，Codex 主模型依据返回的证据完成分析、判断和代码审阅。历史 quality/fan-out 模块没有公开 MCP 入口；`WORKER_LITE_LLM=1` 只启用仍保留的 failure diagnosis、diff red-team 与 `draft` 能力。
 
 ### Q: 这不就是给 Codex 加了个便宜后台吗？
 

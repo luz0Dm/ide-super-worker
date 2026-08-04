@@ -23,7 +23,7 @@ args = ["${slashPath(distIndex)}"]
 cwd = "${slashPath(projectRoot)}"
 startup_timeout_sec = 10
 tool_timeout_sec = 3600
-env = { SANDBOX_ROOT = "${exampleSandbox}", ONEAPI_BASE_URL = "${baseUrl}", CLAUDE_MODEL = "${model}", CLAUDE_CODE_MODEL = "${claudeCodeModel}", CLAUDE_PERMISSION_MODE = "acceptEdits", USE_OPENAI_ADAPTER = "1", ADAPTER_ENABLE_THINKING = "0", WAIT_DEFAULT_MS = "1800000" }
+env = { SANDBOX_ROOT = "${exampleSandbox}", ONEAPI_BASE_URL = "${baseUrl}", CLAUDE_MODEL = "${model}", CLAUDE_CODE_MODEL = "${claudeCodeModel}", CLAUDE_PERMISSION_MODE = "acceptEdits", USE_OPENAI_ADAPTER = "1", ADAPTER_ENABLE_THINKING = "0", WORKER_LITE_LLM = "0", WAIT_DEFAULT_MS = "1800000" }
 env_vars = ["ONEAPI_API_KEY"]
 `;
 

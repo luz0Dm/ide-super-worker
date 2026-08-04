@@ -95,9 +95,23 @@ for (const output of [
   assert.equal(failureSemantics.assessShellFailure("synthetic gate", "failed", output), "gate_failure", output);
 }
 assert.equal(
+  failureSemantics.assessShellFailure(
+    "npm run stats:gate -- --since-minutes=15",
+    "failed",
+    "Tool Error Samples\n2026-07-22T01:47:56.059Z command_digest/shell timeout\n[gate] overall tool error rate 9.1% must stay below 5%"
+  ),
+  "gate_failure",
+  "a gate failure must outrank historical timeout text in its diagnostic output"
+);
+assert.equal(
   failureSemantics.assessShellFailure("@'\nSelect-Object -First 3\n'@", "failed", "乱码的 CMD 输出"),
   "shell_mismatch",
   "PowerShell here-strings with Select-Object must not become unknown_failure in CMD"
+);
+assert.equal(
+  failureSemantics.assessShellFailure("Get-Date -Format o", "failed", "'Get-Date' is not recognized as a command"),
+  "shell_mismatch",
+  "PowerShell cmdlets sent to CMD must not become unknown_failure"
 );
 assert.equal(
   failureSemantics.assessShellFailure(

@@ -6,7 +6,7 @@
 
 ## 中文说明
 
-> 让 Codex 专注于规划与审阅；把大文件阅读、修复循环和测试日志交给低成本异步 worker，并只返回可核查的压缩证据。
+> 让 Codex 专注于分析、判断与审阅；把大文件阅读、修复循环和测试日志交给异步 worker，并只返回可核查的压缩证据。
 
 不要把宝贵的 Codex 上下文花在批量读文件、反复修补和超大 diff 上。
 
@@ -24,7 +24,7 @@ OpenAI 兼容网关上的异步 worker。Codex 仍负责规划、判断与审阅
 
 ```mermaid
 flowchart LR
-  A["Codex\n规划与审阅"] -->|"精简 MCP 请求"| B["IDE Super Worker"]
+  A["Codex\n分析、判断与审阅"] -->|"精简 MCP 请求"| B["IDE Super Worker"]
   B -->|"启动"| C["Claude Code CLI\n后台任务"]
   C -->|"廉价模型网关"| D["OpenAI-compatible model"]
   C -->|"改动 + 检查"| B
@@ -32,22 +32,31 @@ flowchart LR
 ```
 
 - `search`：零 LLM 的仓库发现。
-- `analyze`、`review`：只读的低成本分析与审阅。
+- `read_pack`：打包确定性的只读证据；Codex 主模型负责分析和判断。
+- `diff_digest`、`get_artifact_slice`：先压缩 diff，再按需读取完整证据，
+  由 Codex 主模型完成代码审阅。
 - `start`：将读文件、编辑、测试等实施循环放入后台 worker。
 - `get`、`wait`：只把必要的文件变更、检查与摘要带回 Codex 主线程。
 
 这样 Codex 专注于高价值判断，worker 吸收冗长的中间过程，减少主线程需要读取的
 文件和测试日志。
 
-### 纯证据模式（`WORKER_LITE_LLM=0`）
+### 默认纯证据模式（`WORKER_LITE_LLM=0`）
 
-建议在本仓 MCP 配置中设置 `WORKER_LITE_LLM=0`，让判断权留在 Codex 主模型：标准 `analyze` / `review` 不再调用廉价 LLM，而是返回可核查的 `read_pack` / diff 证据；`shell` 失败摘要改为确定性提取，job `failure_digest` 与 red-team 跳过，`draft` 返回结构化拒绝。
+本仓默认 `WORKER_LITE_LLM=0`，让判断权留在 Codex 主模型：`search`、
+`read_pack`、`diff_digest`、`get_artifact_slice` 和测试用 `shell digest`
+负责确定性证据收集；job `failure_digest` 与 red-team 跳过，`draft` 返回结构化拒绝。
 
-该开关默认仍为 `1`，因此未配置时行为不变。显式 `quality_mode:"high"`、fan-out、语义审查和 `start` 执行路径不受影响。
+显式设置 `WORKER_LITE_LLM=1` 并重启 MCP worker，只会启用仍保留的网关型
+failure diagnosis、diff red-team 与 `draft` 能力。历史 quality/fan-out 模块没有
+公开 MCP 入口。`semantic_gate` 是独立的执行后验证控制：调用方可以显式配置，
+工具错误自愈也可能把后续 `start` 提升为 `warn`；它不会重新启用通用 worker
+分析或代码审阅。`start` 执行路径不受此开关影响。
 
-### 质量优先模式
+### 内部历史质量实验（无 MCP 入口）
 
-`analyze` 和 `review` 可显式传入 `quality_mode:"high"`。该模式是可选且
+`quality_mode:"high"` 与 fan-out 代码只保留用于内部评估和历史复现，不是公开
+MCP 选项，也不会因 `WORKER_LITE_LLM` 而暴露。内部实验是
 **失败即停止（fail-closed）** 的：三个固定角色分支完成分析后，交由独立审阅器裁决；
 任何截断输出、空答案、模型不匹配、无效引用或未解决分歧，都会返回
 `needs_direct_review` 或 `failed`，绝不悄悄回退为普通答案。
@@ -61,8 +70,8 @@ flowchart LR
   D -->|否| F["人工直接审阅 / 失败"]
 ```
 
-默认仍为 `standard`。只有通过真实冻结任务、盲评和 Trial A → B → C 的资格门禁，
-才可讨论更改默认路由。详细的中英文迭代说明见
+Trial A → B → C 只用于内部评估，不会创建公开 MCP 入口，也不会改变系统的
+默认纯证据路由。详细的中英文迭代说明见
 [质量优先迭代说明](docs/quality-first-iteration.zh-CN.md)。
 
 ### 快速开始
@@ -93,11 +102,15 @@ Most AI coding tools optimize the model call. This project optimizes the route.
 The fast path is deliberately split:
 
 - `search` handles repo discovery with zero LLM calls.
-- `analyze` and `review` use one cheap gateway call for read-only work.
+- `read_pack` packages deterministic read-only evidence for main-model analysis.
+- `diff_digest` and `get_artifact_slice` keep diff intake bounded while the main
+  Codex model performs code review.
 - `start` moves implementation loops into an async worker so Codex is not blocked by every file read, failed attempt, or test log.
 - `get` and `wait` return compact evidence instead of dumping the whole transcript back into the premium thread.
 
-That routing discipline is the efficiency edge: Codex stays focused on planning and review while the worker absorbs the bulky middle.
+That routing discipline is the efficiency edge: Codex stays focused on analysis,
+judgment, and code review while the worker absorbs the bulky evidence-gathering
+and implementation middle.
 
 ## The Simple Picture
 
@@ -115,7 +128,7 @@ With this worker, Codex delegates the noisy middle:
 
 ```mermaid
 flowchart LR
-  A["Codex<br/>planner and reviewer"] -->|"small MCP start request"| B["IDE Super Worker"]
+  A["Codex<br/>analyst, decision-maker, reviewer"] -->|"small MCP start request"| B["IDE Super Worker"]
   B -->|"launches"| C["Claude Code CLI<br/>background job"]
   C -->|"Anthropic messages"| D["Local adapter"]
   D -->|"OpenAI-compatible chat"| E["Cheap gateway model<br/>DeepSeek / OneAPI / New API"]
@@ -163,21 +176,29 @@ This project gives you the missing plumbing:
 | --- | --- | --- | --- |
 | Direct premium-agent coding | The main agent reads files, retries fixes, sees every test log, and ingests large diffs. | Premium context becomes the workspace transcript. | Codex sends one small task; worker returns changed files, checks, logs, and optional diff. |
 | Generic cheaper-model wrapper | A cheaper model runs, but the main agent still needs bulky context and manual verification. | Lower model price, same noisy workflow. | Cheap gateway handles bulk tokens; scoped checks and compact results decide whether work is trustworthy. |
-| Full agent loop for read-only questions | Starting an edit-capable loop for summaries and discovery. | Slow startup and unnecessary write surface. | `search` is zero-LLM; `analyze`/`review` are read-only cheap calls. |
+| Full agent loop for read-only questions | Starting an edit-capable loop for summaries and discovery. | Slow startup and unnecessary write surface. | `search` and `read_pack` collect deterministic evidence for the main model. |
 | Parallel implementation in one repo | Dirty worktrees collide and review payloads grow. | Coordination overhead eats the gain. | Optional worktree isolation plus scoped patch checks keep jobs separable. |
 
 ## Highlights
 
 - Async MCP tools: `start`, `get`, `tail`, `wait`, `cancel`.
-- Read-only lite tools: `read_pack`, `analyze`, `diff_digest`, `history`, and `draft` keep bulky reading/review/drafting out of the premium thread. `read_pack` keeps its inline payload at or below 16 KB; when not all slices fit, `truncated:true` signals that the complete pack is available through `receipt.artifact_refs`.
-- Code review lite tool: `review` checks diffs/files through the cheap gateway.
+- Evidence tools: `search`, `read_pack`, `diff_digest`, `get_artifact_slice`,
+  `history`, and `shell` keep bulky deterministic evidence out of the main
+  thread while leaving conclusions to the main model. `read_pack` keeps
+  its inline payload at or below 16 KB; when not all slices fit,
+  `truncated:true` signals that the complete pack is available through
+  `receipt.artifact_refs`.
 - Zero-LLM repo discovery and mechanical work: `search` uses bounded local search, and `apply_edits` handles deterministic replacements without a model call.
 - Worker-side command digesting: `shell` can run tests/builds/lint and return a compact failure digest. Test and typecheck exits return public `status:"failed"` with canonical `failure`, `failure_kind`, and `required_action`, while their receipt/metric remains `ok`; timeouts, missing commands, permission failures, and other infrastructure failures remain tool errors.
 - Receipt abnormal-output assessment: every receipt carries a deterministic accept/repair verdict and bounded repair guidance without default multi-model voting.
-- Runtime tool containment: the worker classifies tool errors, opens per-tool/per-error-class circuits, intercepts unhealthy routes, and uses deterministic fallbacks for `review`/`analyze` when the LLM route is unhealthy.
+- Runtime tool containment: the worker classifies tool errors, opens
+  per-tool/per-error-class circuits, and intercepts unhealthy routes. Public
+  evidence collection stays on deterministic tools.
 - Reliability tiers and episode summaries: `start` can record `lite`, `standard`, `strict`, or `critical` expectations without blocking old callers; hard rejection happens only with `blocking_policy:"enforce"`.
 - Outcome v1: job-control, rejection, and failure payloads add one versioned semantic outcome while preserving the 2.5 legacy projection.
-- Independent semantic verification: `semantic_gate:"required"` performs a dedicated cache-free review and fails closed when evidence is missing or inconclusive.
+- Independent semantic verification: `semantic_gate:"required"` is a separate
+  post-execution check that fails closed when evidence is missing or
+  inconclusive; it does not enable general worker analysis or code review.
 - Anthropic-to-OpenAI adapter: lets Claude Code talk to OpenAI-compatible gateways.
 - 429 and 5xx retry handling with `Retry-After` support.
 - Optional `include_diff:false` to return only `changed_files` and `checks`.
@@ -188,13 +209,23 @@ This project gives you the missing plumbing:
 - Optional worktree isolation for parallel jobs inside one repository.
 - Secret redaction in logs and tool responses.
 
-## Deterministic-Only Mode (WORKER_LITE_LLM=0)
+## Default Evidence-Only Mode (WORKER_LITE_LLM=0)
 
-Set `WORKER_LITE_LLM=0` when the main Codex model should retain judgment instead of importing unsupported conclusions from the cheap-LLM lane. Standard `analyze` and `review` then return deterministic `read_pack` or diff evidence for the caller to interpret.
+The default is `WORKER_LITE_LLM=0`, including when the variable is unset.
+Use `read_pack`, `diff_digest`, and `get_artifact_slice` to collect deterministic
+evidence for the main Codex model to analyze and review.
 
-In this mode, failed `shell` commands use a deterministic digest, job `failure_digest` and diff red-team judgment are skipped, and `draft` returns a structured rejection. The default remains `1`, so existing installations keep their current behavior unless they opt in.
+In this mode, failed `shell` commands use a deterministic digest, job
+`failure_digest` and diff red-team judgment are skipped, and `draft` returns
+a structured rejection.
 
-Explicit `quality_mode:"high"`, fan-out, the semantic reviewer, and the `start` execution path are unaffected.
+Setting `WORKER_LITE_LLM=1` and restarting the MCP worker enables only the
+remaining gateway-backed failure diagnosis, diff red-team judgment, and `draft`
+features. Historical quality/fan-out modules have no public MCP entry point.
+`semantic_gate` remains a separate
+post-execution verification control; callers may configure it explicitly and
+documented tool-error self-heal may raise it to `warn`. The `start` execution
+path is unaffected.
 
 ## Use Cases
 
@@ -203,7 +234,7 @@ Use it when you want Codex to stay sharp instead of stuffed:
 | Task | Normal flow | Worker flow |
 | --- | --- | --- |
 | Fix a bug in a large repo | Codex reads many files and test outputs | Worker reads/edits/tests, Codex reviews compact result |
-| Summarize implementation details | Full agent loop may start | `analyze` calls cheap gateway directly |
+| Summarize implementation details | Full agent loop may start | Worker returns bounded deterministic evidence; Codex summarizes it |
 | Run repeated repair passes | Main thread absorbs every attempt | Worker handles loop and returns final evidence |
 | Parallel scoped edits | One dirty worktree gets tangled | Optional git worktree isolation keeps jobs apart |
 | Cost accounting | Claude Code cost may be misleading | Gateway token usage is written to JSONL |
@@ -218,15 +249,13 @@ Use it when you want Codex to stay sharp instead of stuffed:
 | `tail` | Read recent worker logs. |
 | `wait` | Wait for completion without killing the job on poll timeout; a poll timeout keeps `outcome.status="running"`. |
 | `cancel` | Kill a running job process tree. |
-| `analyze` | Read-only analysis for selected files or bounded globs. `quality_mode:"high"` opts into the fail-closed `quality.v1` three-target pipeline. |
-| `review` | Review a job diff/checks or selected files. `quality_mode:"high"` requires three branches plus an independent evidence adjudicator. |
 | `search` | Zero-LLM bounded repository search using `rg` when available. |
 | `read_pack` | Zero-LLM context packer for selected paths; returns up to 16 KB of ordered symbol/keyword slices and stores the complete pack behind an artifact ref. |
-| `diff_digest` | Summarize current git diff by file, hunk headers, and risk; optionally run cheap red-team review. |
+| `diff_digest` | Summarize current git diff by file, hunk headers, and risk; legacy red-team judgment requires the worker-LLM opt-in. |
 | `shell` | Run bounded worker-side commands with optional `digest:true` for test/build/lint output. |
 | `apply_edits` | Zero-LLM literal or regex replacements with replacement-count checks. |
 | `history` | Bounded git log/blame timeline for file or line archaeology. |
-| `draft` | Draft commit messages, PR descriptions, changelog notes, or release notes from the current diff. |
+| `draft` | Legacy worker-LLM drafting lane, disabled by default; otherwise draft in the main model from `diff_digest` evidence. |
 
 ## Quick Start
 
@@ -263,7 +292,7 @@ args = ["D:/path/to/ide-super-worker/dist/index.js"]
 cwd = "D:/path/to/ide-super-worker"
 startup_timeout_sec = 10
 tool_timeout_sec = 3600
-env = { SANDBOX_ROOT = "D:/workspaces", ONEAPI_BASE_URL = "https://your-gateway.example.com/v1", CLAUDE_MODEL = "deepseek-v4-flash", CLAUDE_CODE_MODEL = "sonnet", WORKER_SEMANTIC_REVIEW_MODEL = "deepseek-v4-pro", CLAUDE_PERMISSION_MODE = "acceptEdits", USE_OPENAI_ADAPTER = "1", WAIT_DEFAULT_MS = "1800000" }
+env = { SANDBOX_ROOT = "D:/workspaces", ONEAPI_BASE_URL = "https://your-gateway.example.com/v1", CLAUDE_MODEL = "deepseek-v4-flash", CLAUDE_CODE_MODEL = "sonnet", CLAUDE_PERMISSION_MODE = "acceptEdits", USE_OPENAI_ADAPTER = "1", WORKER_LITE_LLM = "0", WAIT_DEFAULT_MS = "1800000" }
 env_vars = ["ONEAPI_API_KEY"]
 ```
 
@@ -277,7 +306,6 @@ env_vars = ["ONEAPI_API_KEY"]
   "permission_mode": "acceptEdits",
   "include_diff": false,
   "verification_policy": { "version": 1, "task_kind": "modifying" },
-  "semantic_gate": "required",
   "scoped_patch": {
     "paths": ["src", "tests"],
     "max_diff_bytes": 20000
@@ -328,10 +356,12 @@ These controls reduce main-thread context, payload size, and accounting noise; t
 - `DIFF_MAX_BYTES` caps patch payloads.
 - `INCLUDE_DIFF_DEFAULT=0` makes omitted `include_diff` behave like `false`.
 - `CHECK_OUTPUT_RESPONSE_MAX` keeps failed check output compact in `get`/`wait` responses while `tail` retains fuller logs.
-- `analyze` skips Claude Code for read-only summaries.
-- `search` handles symbol/file discovery without any LLM call.
-- `review` and `WORKER_FAILURE_DIGEST=1` move diff review and failure diagnosis to the cheaper gateway.
-- `read_pack`, `diff_digest`, `shell digest`, `apply_edits`, `history`, and `draft` move the remaining high-token planning/review chores into worker lanes.
+- `search`, `read_pack`, `diff_digest`, `shell digest`, `apply_edits`, and
+  `history` collect or transform evidence without an LLM call.
+- `read_pack`, `diff_digest`, and `get_artifact_slice` compose deterministic
+  evidence while the main model performs the actual analysis and code review.
+- Gateway-backed failure diagnosis, red-team judgment, and `draft` require
+  explicit opt-in; historical quality/fan-out modules have no public MCP entry.
 - `WORKER_METRICS_FILE` records real gateway token usage plus `event=tool_call` rows for zero-LLM worker calls. Successful/cache Lite rows also include additive `queue_wait_ms`, `upstream_ms`, `e2e_ms`, and `attempt_count` fields for latency diagnosis.
 - `WORKER_EVAL_SPAN_FILE` stores validated paired-evaluation records separately; it never falls back to `JobResult.total_cost_usd`.
 - `WORKER_ESCALATE_MODEL` upgrades only failed, difficult revise passes.
@@ -345,15 +375,19 @@ Claude Code's own `total_cost_usd` may reflect Anthropic pricing, not your gatew
 
 For best results:
 
-1. Set `include_diff:false` for delegated implementation tasks.
+1. Use `include_diff:false` for the first compact receipt, then fetch and review
+   the full diff before accepting critical changes.
 2. Keep `scoped_patch.paths` narrow.
 3. Add concrete `checks` so the worker proves completion.
-4. Use `analyze` for read-only questions.
+4. Use `search` and `read_pack` to collect evidence for main-model analysis.
 5. Enable `WORKER_METRICS_FILE` and compare token usage by route/model.
 6. Use `read_pack` instead of full-file reads and `diff_digest` instead of full diff ingestion.
 7. Use `shell` with `digest:true` for tests/builds/lint so command output is summarized before Codex sees it.
-8. Keep `start` below 30% of worker calls; use finer tools for search, reading, diff digestion, history, drafts, and mechanical edits.
-9. Treat receipt `abnormal.verdict !== "accept"` as a repair signal before considering multi-model parallel review. For `shell`, use `failure_kind` and `required_action` first; do not escalate to the main model just because the command exit code is non-zero.
+8. Keep `start` below 30% of worker calls; use finer tools for search, reading,
+   diff digestion, history, and mechanical edits.
+9. Treat receipt `abnormal.verdict !== "accept"` as a repair signal. For
+   `shell`, use `failure_kind` and `required_action` first; the main model
+   should interpret the evidence rather than forwarding judgment to a worker.
 10. Use a fit-for-task default model and reserve `WORKER_ESCALATE_MODEL` for difficult revise passes; do not downgrade primary, fallback, or escalation models because of cost.
 
 ## Important Environment Variables
@@ -362,7 +396,7 @@ For less common stats, cache, reliability, and circuit-breaker settings, see [Ad
 
 | Variable | Purpose |
 | --- | --- |
-| `SANDBOX_ROOT` | Root directory allowed for worker jobs and `analyze` file reads. |
+| `SANDBOX_ROOT` | Root directory allowed for worker jobs and evidence-tool file reads. |
 | `WORKER_ALLOW_FILESYSTEM_ROOT` | Emergency override. Set `1` to permit jobs/searches at a drive root; disabled by default to prevent accidental whole-disk scans. |
 | `ONEAPI_BASE_URL` / `ANTHROPIC_BASE_URL` | Primary gateway URL. |
 | `ONEAPI_API_KEY` / `ANTHROPIC_API_KEY` | Primary gateway key. Keep it out of git. |
@@ -373,25 +407,25 @@ For less common stats, cache, reliability, and circuit-breaker settings, see [Ad
 | `WORKER_GLOBAL_COORDINATION_DIR` | Shared machine-local FIFO state directory. Defaults to a per-user namespace under the OS temp directory. All MCP instances that should share limits must use the same value. |
 | `WORKER_GLOBAL_HEAVY_MAX` | Machine-global active `start` job limit, default `1`. |
 | `WORKER_GLOBAL_HEAVY_QUEUE_MAX` | Machine-global waiting `start` job limit, default `8`; excess jobs fail with a retryable busy error. |
-| `WORKER_GLOBAL_LITE_MAX` | Machine-global active gateway-call limit for analyze/review/semantic/fan-out work, default `1`. |
+| `WORKER_GLOBAL_LITE_MAX` | Machine-global active gateway-call limit for explicitly enabled gateway features, internal historical experiments, and separate semantic verification calls; default `1`. |
 | `WORKER_GLOBAL_LITE_QUEUE_MAX` | Machine-global waiting lite-call limit, default `12`; excess calls fail with a retryable busy error. |
 | `WORKER_GLOBAL_ACQUIRE_TIMEOUT_MS` | Maximum wait for a global Heavy or Lite slot, default `600000` ms. |
 | `DIFF_MAX_BYTES` | Maximum returned diff size. |
 | `INCLUDE_DIFF_DEFAULT` | Default for omitted `include_diff`; set `0` to omit diffs unless explicitly requested. |
 | `CHECK_OUTPUT_RESPONSE_MAX` | Per-check output cap for compact `get`/`wait` responses. |
 | `WORKER_METRICS_FILE` | Optional JSONL path for token usage, tool audit, and Lite latency metrics. |
-| `WORKER_QUALITY_TARGETS_FILE` | Optional path to the untracked versioned three-branch + reviewer config used only by `quality_mode:"high"`; keys are referenced by environment-variable name. |
+| `WORKER_QUALITY_TARGETS_FILE` | Internal/historical three-branch + reviewer configuration for evaluation; it does not expose an MCP tool. |
 | `WORKER_EVAL_SPAN_FILE` | Optional, separate JSONL path for validated direct/worker EvalSpan records. |
 | `WORKER_EVAL_SUITE_ID` / `WORKER_EVAL_TASK_ID` / `WORKER_EVAL_RUN_ID` / `WORKER_EVAL_ARM` | Optional correlation context appended to worker metrics during isolated eval runs. |
 | `WORKER_PRICE_INPUT` / `WORKER_PRICE_OUTPUT` / `WORKER_PRICE_CACHE` | Optional USD-per-1M-token prices used by `npm run stats`; accounting only, never a worker LLM cost gate. |
 | `WORKER_PRICE_TABLE` | Optional JSON model price overrides for `npm run stats`; must not affect primary/fallback/escalation selection. |
-| `WORKER_LITE_LLM` | Set `0` to disable the cheap-LLM judgment lane: standard `analyze`/`review` return deterministic evidence packs, shell failure digests become deterministic, job `failure_digest` and red-team judgment are skipped, and `draft` is rejected. Explicit `quality_mode:"high"`, fan-out, the semantic reviewer, and `start` are unaffected. Default `1`. |
-| `WORKER_FAILURE_DIGEST` | Set `1` to generate a cheap-gateway diagnosis on failed jobs. |
+| `WORKER_LITE_LLM` | Default `0`: use deterministic evidence tools for main-model judgment; shell failure digests are deterministic, job `failure_digest` and red-team judgment are skipped, and `draft` is rejected. Set `1` explicitly and restart the worker only to enable the remaining gateway-backed failure diagnosis, red-team, and `draft` features. |
+| `WORKER_FAILURE_DIGEST` | Legacy option: set `1` with `WORKER_LITE_LLM=1` to generate a gateway diagnosis on failed jobs. |
 | `WORKER_DIGEST_BEFORE_REVISE` | Set `0` to avoid generating a failure digest before auto-revise. |
-| `WORKER_LITE_MODEL` | Optional cheaper model for `analyze`, `review`, and `failure_digest`. |
-| `WORKER_LITE_CACHE_DIR` | Optional disk cache directory for lite read-only tools; must be inside `SANDBOX_ROOT`. |
+| `WORKER_LITE_MODEL` | Optional model for explicitly enabled gateway-backed failure diagnosis, red-team, and `draft` features. |
+| `WORKER_LITE_CACHE_DIR` | Optional disk cache directory for enabled gateway-backed helper calls; must be inside `SANDBOX_ROOT`. |
 | `WORKER_LITE_CACHE_TTL_MS` | TTL for lite disk cache entries, default `3600000`; `0` bypasses cache. |
-| `ADAPTER_PREFIX_CACHE` | Set `1` to use prefix-cache-friendly `analyze` messages. |
+| `ADAPTER_PREFIX_CACHE` | Internal/historical prefix-cache experiment; it does not expose an MCP tool. |
 | `WORKER_FALLBACK_WARN_EVERY` | Warn every N fallback calls; default `5`, `0` disables. |
 | `WORKER_OVERALL_TOOL_ERROR_MAX_PCT` | Gate threshold for total worker tool error rate; default `5`, and the rate must stay below this value. |
 | `WORKER_SINGLE_TOOL_ERROR_MAX_PCT` | Gate threshold for each individual tool's error rate; default `3`, and the rate must stay below this value. |
@@ -401,7 +435,7 @@ For less common stats, cache, reliability, and circuit-breaker settings, see [Ad
 | `WORKER_TOOL_REVIEW_SINCE_MINUTES` | Review window for runtime tool error-rate control; default `180`. |
 | `WORKER_TOOL_REVIEW_GRACE_MS` | How late a scheduled review can run before it is treated as overdue; default `300000`. |
 | `WORKER_TOOL_REVIEW_DISABLED` | Set `1` to disable the runtime review loop. |
-| `WORKER_IDLE_EXIT_MS` | Exit a worker process after this much inactivity when no job is running; default `300000` (5 minutes). Each MCP request resets the deadline; `0` disables idle exit. |
+| `WORKER_IDLE_EXIT_MS` | Optional idle-shutdown delay in milliseconds when no job is running. Default `0` keeps the MCP server connected; a positive value enables idle exit and each request resets the deadline. |
 | `WORKER_TOOL_CIRCUIT_BREAKER` | Active runtime containment switch; default enabled. Set `0` to disable per-tool/per-error-class circuits. |
 | `WORKER_TOOL_CIRCUIT_WINDOW_MS` | Rolling window for immediate circuit decisions; default `900000`. |
 | `WORKER_TOOL_CIRCUIT_OPEN_MS` | How long an opened circuit intercepts the unhealthy route; default `300000`. |
@@ -416,7 +450,7 @@ For less common stats, cache, reliability, and circuit-breaker settings, see [Ad
 | `WORKER_ESCALATE_MODEL` | Optional stronger model for hard revise passes. |
 | `WORKER_RELIABILITY_TIER` | Default `start` reliability profile: `lite`, `standard`, `strict`, or `critical`; default `standard`. |
 | `WORKER_BLOCKING_POLICY` | How missing reliability gates behave: `observe`, `warn`, or `enforce`; default `observe`. |
-| `WORKER_SEMANTIC_GATE` | Declared semantic-review expectation: `off`, `warn`, or `required`; critical jobs default to `warn`. |
+| `WORKER_SEMANTIC_GATE` | Separate post-execution semantic-verification setting: `off`, `warn`, or `required`; documented tool-error self-heal may raise later `start` calls to `warn`, and it does not enable general worker analysis/review. |
 | `WORKER_SEMANTIC_REVIEW_MODEL` | Dedicated model used for the independent semantic verifier. Required for a `required` gate to pass. |
 | `WORKER_SEMANTIC_REVIEW_TIMEOUT_MS` | End-to-end semantic-review deadline, default `60000`, capped at 5 minutes. |
 | `WORKER_TOOL_BUDGET` | Optional advisory max tool-call budget recorded in metrics and reliability profile. |
@@ -460,25 +494,40 @@ The watch states are `HEALTHY`, `QUIET`, `RECOVERING`, `DEGRADED`, `TELEMETRY_FA
 
 `npm run eval:contracts` validates the EvalSpan v1 importer and paired/pilot fail-closed rules. `npm run eval:fixtures` verifies the frozen 10-task pilot corpus and its SHA-256. Import external usage with `npm run eval:gate -- --import producer.jsonl --out .eval/eval-spans.jsonl`; gate a completed pilot with `npm run eval:gate -- --input .eval/eval-spans.jsonl --mode pilot`. `WORKER_METRICS_FILE` is operational telemetry, not a substitute for the required raw provider export for non-zero worker-model usage; without that provider export, the pilot is incomplete. The pilot proves measurement completeness only, not cost savings or quality non-inferiority. The full producer and formal-manifest contract is in [eval/README.md](eval/README.md); run the preregistered 200-400 task gate with `npm run eval:formal -- --input <spans.jsonl> --manifest <manifest.json>`.
 
-`npm run eval:quality -- --input <quality-pairs.jsonl>` evaluates the separate
-Trial A -> B -> C quality qualification program. Passing unit tests or a 40+40
-engineering pilot does not authorize high mode as the default; only real frozen,
-blindly evaluated pairs can produce that qualification. See
+`npm run eval:quality -- --input <quality-pairs.jsonl>` evaluates the separate,
+internal Trial A -> B -> C quality research program. Passing unit tests or a
+40+40 engineering pilot does not create a public MCP entry point; only real
+frozen, blindly evaluated pairs can support an internal finding. See
 [QUALITY_FIRST_PLAN.md](QUALITY_FIRST_PLAN.md), [eval/README.md](eval/README.md),
 and the bilingual [quality-first iteration guide](docs/quality-first-iteration.zh-CN.md).
 
 `npm run skills:validate` checks the project-specific `.claude/skills/` library used to preserve project doctrine for cheaper or lower-context worker sessions.
 
-`npm run stats` reports gateway token usage, receipt byte/artifact usage, a legacy recorded-worker-share audit, and—when `WORKER_ROUTING_EVENTS_FILE` is configured—hook-observable routing coverage. `npm run stats:gate -- <metrics.jsonl>` is a health gate with exit code 2 on failure. Category routing targets (search 80%, context_pack 70%, command_digest 70%, diff_digest 60%, review 60%, mechanical_edit 50%, history 60%, draft 80%, analysis 60%) and the `start` share target (at most 30%) remain warnings until a real seven-day baseline exists. Gate mode still fails if required categories have no audit evidence, sampled overall/category/tool execution-error rates breach their limits, large receipt payloads lack artifact refs, or `diff_digest` red-team coverage falls below 30%. Fallback share remains observable rather than blocking during the baseline period. Rejected/not-attempted calls are not worker execution errors. Shell metrics expose canonical `failure_class`, initial/final shell and exit code, reroute outcome, retry count, command fingerprint, process-local artifact refs, `worker_execution_result`, and the separate `workload_result`.
+`npm run stats` reports gateway token usage, receipt byte/artifact usage, and—when
+`WORKER_ROUTING_EVENTS_FILE` is configured—hook-observable routing coverage.
+It does not set analysis/review worker-share targets because those judgments
+belong to the main model by default. `npm run stats:gate -- <metrics.jsonl>` is
+a health gate with exit code 2 on failure. Deterministic-tool routing targets and
+the `start` share target remain warnings until a real seven-day baseline exists.
+Gate mode still fails if required deterministic categories have no audit
+evidence, sampled overall/category/tool execution-error rates breach their
+limits, large receipt payloads lack artifact refs, or—when worker-LLM features
+are explicitly enabled—`diff_digest` red-team coverage misses its threshold.
+Fallback share remains observable rather than blocking during the baseline period.
+Rejected/not-attempted calls are not worker execution errors. Shell metrics
+expose canonical `failure_class`, initial/final shell and exit code, reroute
+outcome, retry count, command fingerprint, process-local artifact refs,
+`worker_execution_result`, and the separate `workload_result`.
 
 When the MCP server starts it immediately reviews recent tool error rates without blocking connection. True infrastructure errors schedule a trailing 30-second, single-flight review with at least 60 seconds between runs; workload failures and rejected inputs do not. The existing 3-hour timer remains a low-frequency reconciliation. A threshold breach, or a review that runs later than `WORKER_TOOL_REVIEW_GRACE_MS`, enables escalation self-heal defaults for later `start` calls: `reliability_tier=strict`, `blocking_policy=warn`, `semantic_gate=warn`, `auto_revise=true`, and at least one revise pass. Explicit `start` arguments still win over these defaults.
 
-Runtime containment is more aggressive than the 3-hour review. Every tool result updates an in-memory rolling window. Real tool execution errors are classified (`upstream_404`, `upstream_error`, `shell_mismatch`, `search_timeout`, `timeout`, `missing_command`, `missing_path`, `permission_denied`, `dependency_missing`, or `unknown_failure`). Repeated errors, or any immediate-class error, open a temporary circuit. While open, unhealthy routes are intercepted as `rejected` instead of producing more errors; `review` and `analyze` degrade to deterministic local evidence when possible. Open circuits and a bounded rolling-event snapshot are persisted to a state sidecar file and reloaded on MCP startup or the next tool-control decision, so restarts do not immediately forget an unhealthy route or a tool already close to its circuit threshold. To keep the hot path cheap, OK outcomes are snapshotted only after `WORKER_TOOL_CIRCUIT_STATE_SAVE_MIN_MS`; errors and circuit opens force a save. Shell command business failures still record `command_status` and do not count as tool errors. On Windows, PowerShell-shaped shell commands accidentally sent through `cmd.exe` are retried once through `powershell -NoProfile -ExecutionPolicy Bypass -Command`.
+Runtime containment is more aggressive than the 3-hour review. Every tool result updates an in-memory rolling window. Real tool execution errors are classified (`upstream_404`, `upstream_error`, `shell_mismatch`, `search_timeout`, `timeout`, `missing_command`, `missing_path`, `permission_denied`, `dependency_missing`, or `unknown_failure`). Repeated errors, or any immediate-class error, open a temporary circuit. While open, unhealthy routes are intercepted as `rejected` instead of producing more errors. Open circuits and a bounded rolling-event snapshot are persisted to a state sidecar file and reloaded on MCP startup or the next tool-control decision, so restarts do not immediately forget an unhealthy route or a tool already close to its circuit threshold. To keep the hot path cheap, OK outcomes are snapshotted only after `WORKER_TOOL_CIRCUIT_STATE_SAVE_MIN_MS`; errors and circuit opens force a save. Shell command business failures still record `command_status` and do not count as tool errors. On Windows, PowerShell-shaped shell commands accidentally sent through `cmd.exe` are retried once through `powershell -NoProfile -ExecutionPolicy Bypass -Command`.
 
 Additional redundancy that is already in place:
 
 - Gate redundancy: `codex:guard` combines recent routing audit evidence with `stats:gate`.
-- Route redundancy: `review`/`analyze` can fall back to local deterministic evidence while LLM review routes are unhealthy.
+- Route redundancy: `read_pack`, `diff_digest`, and `get_artifact_slice` keep
+  the public evidence path deterministic and independently inspectable.
 - Shell redundancy: shell mismatch is retried once through the matching Windows shell before surfacing failure.
 - State redundancy: circuit state is atomically written with a temp file plus rename, protected by a best-effort lock, guarded by a checksum, and pruned on load. Corrupt, mismatched, or expired state is ignored and rewritten instead of crashing the MCP server.
 - Restart redundancy: a small rolling-event snapshot is restored with open circuits so a restart does not erase tools that are already near a circuit threshold.
@@ -490,7 +539,7 @@ The routing contract tests lock the core money/safety invariants:
 - I5: identical read-only requests hit cache; primary failure plus fallback records one successful upstream.
 - I6: read-only tools do not write to the workspace.
 
-The smoke test also verifies the current tool surface: `analyze`, `apply_edits`, `cancel`, `diff_digest`, `draft`, `get`, `get_artifact_slice`, `history`, `read_pack`, `review`, `search`, `shell`, `start`, `tail`, and `wait`.
+The smoke test also verifies the current tool surface: `apply_edits`, `cancel`, `diff_digest`, `draft`, `get`, `get_artifact_slice`, `history`, `read_pack`, `search`, `shell`, `start`, `tail`, `wait`.
 
 ## When To Use It
 
@@ -499,10 +548,11 @@ Use this worker for:
 - long codebase reading tasks,
 - scoped code edits with tests,
 - repeated repair loops,
-- cheap model summaries,
-- background implementation while Codex continues planning/reviewing.
+- deterministic search/read/diff/test evidence collection,
+- background implementation while Codex continues analyzing and reviewing.
 
-Keep the main Codex thread for high-level decisions, code review, final integration, and tasks that require your most capable model directly.
+Keep the main Codex thread for analysis, high-level decisions, code review,
+final integration, and tasks that require your most capable model directly.
 
 ## Attribution
 

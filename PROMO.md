@@ -10,7 +10,7 @@ Codex 应该把精力留给规划、判断和验收，而不是吞完整仓库�
 
 **IDE Super Worker 2.6.2** 给 Codex 增加了一条异步证据通道：把搜索、上下文打包、实现循环和检查交给后台 worker；主线程只接收改动文件、检查结果、可选 diff 与可审计的证据。
 
-这版新增 `WORKER_LITE_LLM=0`：标准 `analyze` / `review` 可退化为确定性的证据包，不再让低成本模型替主线程下结论。也就是说，证据交给 worker，判断保留给 Codex。
+默认 `WORKER_LITE_LLM=0`：`read_pack`、`diff_digest` 和 `get_artifact_slice` 返回确定性的证据，worker 不替主线程做分析、判断或代码审阅结论。证据收集与执行交给 worker，分析、判断和审阅保留给 Codex 主模型。显式设置 `WORKER_LITE_LLM=1` 只启用仍保留的 failure diagnosis、diff red-team 与 `draft` 能力；历史 quality/fan-out 模块没有公开 MCP 入口。
 
 适合在大型代码库中反复“读代码 → 改代码 → 跑检查”的工作流。它不承诺任何固定节省比例；实际成本和质量应由项目自己的任务与指标验证。
 
@@ -22,7 +22,7 @@ Codex should spend its context on planning, judgment, and acceptance—not on sw
 
 **IDE Super Worker 2.6.2** adds an asynchronous evidence lane for Codex. Search, context packing, implementation loops, and checks run in a background worker; the main thread receives changed files, checks, optional diffs, and auditable evidence.
 
-This release adds `WORKER_LITE_LLM=0`: standard `analyze` and `review` can return deterministic evidence packs instead of asking a cheap model to make conclusions. The worker gathers evidence; Codex keeps the judgment.
+The default is `WORKER_LITE_LLM=0`: `read_pack`, `diff_digest`, and `get_artifact_slice` return deterministic evidence, so the worker does not make analysis, judgment, or code-review conclusions for the main thread. The worker gathers evidence and executes tasks; the Codex main model analyzes, decides, and reviews. Setting `WORKER_LITE_LLM=1` only enables the remaining failure-diagnosis, diff red-team, and `draft` features; historical quality/fan-out modules have no public MCP entry.
 
 It is built for large codebases with repeated read → edit → test loops. It does not promise a fixed savings percentage—measure cost and quality against your own workload.
 
@@ -36,12 +36,12 @@ Project: <https://github.com/luzmatrix002/ide-super-worker>
 它不是“再套一层便宜模型”，而是把任务按风险和成本分流：
 
 - `search` 在本地检索，不调用模型；
-- `analyze`、`review` 用只读低成本路径；
+- `read_pack`、`diff_digest`、`get_artifact_slice` 返回确定性证据，分析和审阅由 Codex 主模型完成；
 - `start` 在后台执行读代码、修改和测试循环；
 - 主线程只审阅压缩证据，而不是吞完整日志和大 diff。
 
-新增的 `quality_mode:"high"` 采用三分支分析加独立审阅器，并且失败即停止：证据不完整、
-输出截断或结论有冲突时会要求人工直接审阅，绝不静默降级。
+历史 quality/fan-out 模块没有公开 MCP 入口；`WORKER_LITE_LLM=1` 只启用仍保留的
+failure diagnosis、diff red-team 与 `draft`。默认职责边界是 worker 取证与执行，Codex 主模型分析、判断和审阅。
 
 适合需要在大仓库里反复读、改、测，又不想让主线程被中间过程塞满的场景。项目和完整的
 中英文说明：<https://github.com/luzmatrix002/ide-super-worker>
@@ -51,12 +51,13 @@ Project: <https://github.com/luzmatrix002/ide-super-worker>
 
 ## Latest Release Angle
 
-IDE Super Worker 2.5.0 is now focused on one practical promise: keep Codex on the high-value planning and review path, and push bulky code-reading, repair, checks, review, and failure diagnosis into a cheaper worker lane.
+IDE Super Worker keeps Codex on the high-value planning, analysis, judgment, and review path, while pushing deterministic search and evidence packing plus repair loops and checks into a lower-cost worker lane.
 
 The current build adds:
 
 - Default compact worker results, with diffs opt-in instead of automatic.
-- Cheap read-only `analyze`, zero-LLM `search`, and gateway-backed `review`.
+- Deterministic `read_pack`, `diff_digest`, and `get_artifact_slice` evidence for Codex to assess, plus zero-LLM `search`.
+- `WORKER_LITE_LLM=1` only enables remaining failure-diagnosis, diff red-team, and `draft` features; historical quality/fan-out has no public MCP entry.
 - JSONL metrics plus `npm run stats` for real route/model token accounting.
 - Primary/fallback gateway routing with official Anthropic fallback disabled unless explicitly allowed.
 - Bounded check output, failure digests, cache-friendly prompts, and controlled revise escalation.
@@ -66,9 +67,9 @@ Sanitized live acceptance snapshot:
 
 - Build, core tests, smoke tests, and network doctor passed.
 - Primary and fallback gateways were reachable.
-- Real analyze calls were accepted by the configured primary model.
-- Fallback analyze succeeded when the primary key was intentionally invalid.
-- Packet capture during live analyze traffic showed primary-gateway packets and zero official Anthropic packet events.
+- Historical pre-removal gateway validation reached the configured primary model.
+- The same historical validation used the fallback when the primary key was intentionally invalid.
+- Packet capture during that opt-in validation showed primary-gateway packets and zero official Anthropic packet events.
 - Metrics landed in the configured JSONL file and `npm run stats` aggregated them without extra arguments.
 
 ## One-Liner
@@ -100,8 +101,8 @@ IDE Super Worker keeps each class of work in its cheapest safe lane:
 | Work type | Common competing flow | IDE Super Worker flow |
 | --- | --- | --- |
 | Find code | Ask an agent to search and summarize. | `search` does bounded local repo search with 0 LLM calls. |
-| Explain files | Start a full edit-capable agent loop. | `analyze` reads sandboxed files and makes one cheap gateway call. |
-| Review changes | Send large diffs back to the premium thread. | `review` uses the cheap gateway and returns a structured verdict. |
+| Explain files | Start a full edit-capable agent loop. | `read_pack` returns deterministic read-only evidence for Codex to analyze. |
+| Review changes | Send large diffs back to the premium thread. | `diff_digest` packages evidence and `get_artifact_slice` fetches details; Codex makes the review judgment. |
 | Implement fixes | Keep the main Codex thread inside the repair loop. | `start` runs async; Codex receives compact evidence. |
 | Verify result | Trust a long transcript. | Scoped patch checks, command checks, and routing-contract tests gate the result. |
 
@@ -153,12 +154,12 @@ flowchart LR
 ## Key Benefits
 
 - Lower Codex token intake by returning compact evidence instead of full intermediate context.
-- Use cheaper model gateways for bulk code reading and repair.
+- Use deterministic evidence packs for bulk code reading and cheaper gateways for execution and repair loops.
 - Use zero-LLM `search` before model calls, so discovery costs nothing.
-- Keep read-only work read-only: `analyze` and `review` are contract-tested against workspace writes.
+- Keep judgment in Codex: `read_pack`, `diff_digest`, and `get_artifact_slice` collect deterministic evidence without worker-LLM conclusions.
 - Keep safety rails: sandbox root, scoped patch checks, secret redaction, and permission controls.
 - Keep quality rails: test commands, deterministic result assessment, and bounded auto-revise.
-- Use `analyze` for fast read-only summaries without launching a full agent loop.
+- Use `read_pack` for fast deterministic read-only evidence without launching a full agent loop.
 
 ## 中文发布文案
 
@@ -172,9 +173,9 @@ flowchart LR
 
 - 大仓库里先搜索、再读关键文件。
 - bug 修复需要多轮跑测试。
-- 代码 review 只想看结构化结论，不想把整段 diff 塞回主线程。
+- 代码 review 由 Codex 主模型依据结构化证据完成，不必把整段 diff 默认塞回主线程。
 
-2.5.0 这一版重点是可运营：`read_pack`、`diff_digest`、`shell digest`、`review`、`stats:gate`、工具错误熔断、可靠性档位、技能包校验，以及公开发布前的脱敏清单。
+当前重点是可运营的证据与执行通道：`read_pack`、`diff_digest`、`get_artifact_slice`、`shell digest`、`stats:gate`、工具错误熔断、可靠性档位、技能包校验，以及公开发布前的脱敏清单。
 
 ## English Launch Copy
 
@@ -184,15 +185,15 @@ Codex is best at planning, deciding, and reviewing. It is expensive to make the 
 
 This worker adds a cheaper async lane. Codex sends a small MCP request, Claude Code runs the local loop, the adapter routes model calls to an OpenAI-compatible gateway, and Codex receives compact proof: changed files, checks, logs, and an optional diff.
 
-Version 2.5.0 focuses on operations and trust: `read_pack`, `diff_digest`, worker-side shell digests, cheap-gateway review, stats gates, tool error containment, reliability tiers, skill validation, and a release checklist for public sanitization.
+The current release focuses on operations and trust: `read_pack`, `diff_digest`, `get_artifact_slice`, worker-side shell digests, stats gates, tool error containment, reliability tiers, skill validation, and a release checklist for public sanitization.
 
 ## Iteration Campaign
 
 | Phase | Message | Proof to show | Channel |
 | --- | --- | --- | --- |
 | Day 1 | "Codex should review proof, not swallow every intermediate step." | README flowchart, `include_diff:false` result, passing tests. | GitHub README, pinned X/LinkedIn post. |
-| Day 3 | "Search and read-only analysis do not need a full agent loop." | `search`, `read_pack`, `analyze` examples. | Short thread, Discord MCP communities. |
-| Day 7 | "Worker output is auditable." | `diff_digest`, `review`, `shell digest`, `stats:gate`. | Demo video or annotated terminal screenshots. |
+| Day 3 | "Search and deterministic evidence collection do not need a full agent loop." | `search`, `read_pack` evidence examples. | Short thread, Discord MCP communities. |
+| Day 7 | "Worker output is auditable." | `diff_digest`, `get_artifact_slice`, `shell digest`, `stats:gate`. | Demo video or annotated terminal screenshots. |
 | Day 14 | "Operational guardrails matter more than model-name hype." | sandbox root, scoped patches, secret redaction, circuit breaker. | Blog post, Hacker News / Reddit where allowed. |
 
 Do not claim guaranteed cost reduction for every task. Safer wording: "reduces premium main-thread context intake on large read/edit/test loops by returning compact evidence instead of full intermediate context."
@@ -213,8 +214,8 @@ The pitch is simple: keep the expensive brain clean; move repetitive muscle work
 Use one of these snippets when you need the efficiency angle to land quickly:
 
 1. Most AI coding setups make the best model do everything: search, read, edit, retry, test, and digest the diff. IDE Super Worker splits the route so Codex only handles the decisions.
-2. A cheaper model wrapper lowers unit price, but it does not fix workflow waste. This worker removes waste first: zero-LLM search, one-call read-only analysis, async implementation, compact evidence.
-3. The main speedup is not magic. It is queue discipline: discovery stays local, summaries stay cheap, repair loops run in the background, and Codex reviews only the proof.
+2. A cheaper model wrapper lowers unit price, but it does not fix workflow waste. This worker removes waste first: zero-LLM search, deterministic read-only evidence, async implementation, compact results.
+3. The main speedup is not magic. It is queue discipline: discovery stays local, evidence stays deterministic and compact, repair loops run in the background, and Codex reviews the proof.
 4. Instead of asking a premium agent to watch every step, make it inspect the receipt: changed files, checks, logs, optional diff.
 
 ## Suggested GitHub Description
@@ -240,9 +241,10 @@ Codex gets back the part it actually needs: changed files, checks, logs, and an 
 Useful pieces:
 
 - async `start/get/tail/wait/cancel` tools
-- read-only `analyze` tool for cheap summaries
+- `read_pack` for deterministic read-only evidence packs
 - zero-LLM `search` for fast repo discovery
-- cheap-gateway `review` for structured code review
+- `diff_digest` plus `get_artifact_slice` evidence for the Codex main model to assess
+- `WORKER_LITE_LLM=1` only for remaining failure-diagnosis, diff red-team, and `draft` features
 - 429/5xx retry handling
 - `include_diff:false` to avoid dumping large patches into the main thread
 - token usage JSONL for real cost tracking
@@ -261,10 +263,11 @@ Codex reviewer <- changed files + checks <- worker
 Efficiency lane:
 
 ```text
-search:  local, zero LLM
-analyze: read-only, one cheap call
-start:   async implementation loop
-wait:    compact proof back to Codex
+search:             local, zero LLM
+read_pack:          deterministic read-only evidence
+start:              async implementation loop
+diff_digest/slice:  deterministic diff evidence for Codex
+wait:               compact proof back to Codex
 ```
 
 ## Target Audiences
@@ -289,7 +292,7 @@ wait:    compact proof back to Codex
 2. Show `tail` streaming progress while Codex stays clean.
 3. Show `wait` returning changed files and checks.
 4. Show metrics JSONL with gateway token usage.
-5. Show a second read-only `analyze` call returning quickly without Claude Code startup.
+5. Show a `read_pack` call returning deterministic evidence without a worker-LLM judgment call.
 
 ## Landing Page Headline Options
 

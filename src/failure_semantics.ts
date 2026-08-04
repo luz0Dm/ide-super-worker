@@ -41,7 +41,6 @@ export function assessShellFailure(
 ): ShellFailureKind | undefined {
   if (status === "passed") return undefined;
   const combined = `${command}\n${output}`;
-  if (status === "timeout" || /timed out|timeout/i.test(output)) return "timeout";
   if (
     /\[fail\]|\[gate\].*below target|error rate.*must stay below|fallback ratio.*exceeds|gate\s+(?:failed|inconclusive)/i.test(
       output
@@ -49,8 +48,9 @@ export function assessShellFailure(
   ) {
     return "gate_failure";
   }
+  if (status === "timeout" || /timed out|timeout/i.test(output)) return "timeout";
   if (
-    /\b(Get-Content|ForEach-Object|Write-Output|Remove-Item|Set-Location|Select-Object|Select-String|Get-ChildItem)\b|\$[A-Za-z_][A-Za-z0-9_]*/.test(
+    /\b(Get-Content|Get-Date|ForEach-Object|Write-Output|Remove-Item|Set-Location|Select-Object|Select-String|Get-ChildItem)\b|\$[A-Za-z_][A-Za-z0-9_]*/.test(
       command
     )
   ) {

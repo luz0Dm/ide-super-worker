@@ -1,9 +1,14 @@
 import assert from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
+import { DEFAULT_IDLE_EXIT_MS } from "../config.js";
 
 // Includes cold Node/module startup on Windows, not only the configured idle window.
 const EXIT_TIMEOUT_MS = 5_000;
+
+assert.equal(DEFAULT_IDLE_EXIT_MS, 0, "the MCP transport must stay open by default");
 
 function waitForExit(child: ChildProcess, timeoutMs: number): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
   return new Promise((resolve, reject) => {
@@ -15,18 +20,35 @@ function waitForExit(child: ChildProcess, timeoutMs: number): Promise<{ code: nu
   });
 }
 
-function spawnWorker(idleExitMs: string): ChildProcess {
+function spawnWorker(idleExitMs?: string, cwd = process.cwd()): ChildProcess {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    WORKER_TOOL_REVIEW_DISABLED: "1",
+    WORKER_QUALITY_TARGETS_FILE: "",
+    WORKER_QUALITY_TARGETS_JSON: ""
+  };
+  delete env.WORKER_IDLE_EXIT_MS;
+  if (idleExitMs !== undefined) env.WORKER_IDLE_EXIT_MS = idleExitMs;
   return spawn(process.execPath, [path.resolve("dist/index.js")], {
-    env: {
-      ...process.env,
-      WORKER_IDLE_EXIT_MS: idleExitMs,
-      WORKER_TOOL_REVIEW_DISABLED: "1",
-      WORKER_QUALITY_TARGETS_FILE: "",
-      WORKER_QUALITY_TARGETS_JSON: ""
-    },
+    cwd,
+    env,
     stdio: ["pipe", "ignore", "pipe"],
     windowsHide: true
   });
+}
+
+const defaultCwd = fs.mkdtempSync(path.join(os.tmpdir(), "worker-default-lifecycle-"));
+const defaultChild = spawnWorker(undefined, defaultCwd);
+try {
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.equal(defaultChild.exitCode, null, "the default MCP server must remain connected while stdin is open");
+  defaultChild.stdin?.end();
+  const result = await waitForExit(defaultChild, EXIT_TIMEOUT_MS);
+  assert.equal(result.code, 0);
+  assert.equal(result.signal, null);
+} finally {
+  if (defaultChild.exitCode === null && defaultChild.signalCode === null) defaultChild.kill();
+  fs.rmSync(defaultCwd, { recursive: true, force: true });
 }
 
 const child = spawnWorker("100");

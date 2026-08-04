@@ -4,16 +4,15 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-// The server analyze/review branches are thin composition layers over the same
-// deterministic evidence helpers. In-memory MCP coverage keeps those branches
-// honest, including review of a completed job whose worktree no longer exists.
+// Worker LLM judgment stays disabled by default. The public MCP surface exposes
+// deterministic evidence tools, while stale analyze/review calls fail safely.
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "lite-llm-switch-test-"));
 const metricsFile = path.join(root, "metrics.jsonl");
 
 process.env.SANDBOX_ROOT = root;
 process.env.ONEAPI_BASE_URL = "http://127.0.0.1:9/v1";
 process.env.ONEAPI_API_KEY = "unit-test-api-key";
-process.env.WORKER_LITE_LLM = "0";
+delete process.env.WORKER_LITE_LLM;
 process.env.WORKER_LITE_CACHE_DIR = "";
 process.env.WORKER_METRICS_FILE = metricsFile;
 process.env.WORKER_FAILURE_DIGEST = "1";
@@ -33,7 +32,7 @@ const originalFetch = globalThis.fetch;
 let fetchCalls = 0;
 globalThis.fetch = (async () => {
   fetchCalls += 1;
-  throw new Error("unexpected gateway request while WORKER_LITE_LLM=0");
+  throw new Error("unexpected gateway request in the default evidence-only mode");
 }) as typeof fetch;
 
 function runGit(cwd: string, args: string[]): void {
@@ -49,12 +48,10 @@ function payloadFrom(response: any): any {
 
 try {
   const workerTools = await import("../worker_tools.js");
-  const artifacts = await import("../artifacts.js");
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
   const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
   const { createCodexWorkerServer } = await import("../server.js");
-  const { createJobState, jobs } = await import("../jobs.js");
-  const toolErrorControl = await import("../tool_error_control.js");
+  const { jobs } = await import("../jobs.js");
 
   const shellStartedAt = Date.now();
   const shellResult = (await workerTools.runWorkerShell({
@@ -86,25 +83,6 @@ try {
   assert.equal(draft.status, "rejected");
   assert.equal(typeof draft.required_action, "string");
 
-  const removedWorktree = path.join(root, "removed-worktree");
-  const job = createJobState("lite-review-job", "claude", [], removedWorktree, "test-model");
-  job.status = "completed";
-  job.result.job_status = "completed";
-  job.result.changed_files = ["src/a.txt"];
-  job.result.checks = ["build: passed"];
-  job.result.diff = [
-    "diff --git a/src/a.txt b/src/a.txt",
-    "index 3367afd..3e75765 100644",
-    "--- a/src/a.txt",
-    "+++ b/src/a.txt",
-    "@@ -1 +1 @@",
-    "-old",
-    "+new",
-    "...[diff truncated at 80 bytes]",
-    ""
-  ].join("\n");
-  jobs.set(job.id, job);
-
   const server = createCodexWorkerServer();
   const client = new Client({ name: "lite-llm-switch-test", version: "1.0.0" }, { capabilities: {} });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -112,49 +90,23 @@ try {
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
 
     const listed = await client.listTools();
-    assert.match(listed.tools.find((tool) => tool.name === "analyze")?.description || "", /WORKER_LITE_LLM=0/);
-    assert.match(listed.tools.find((tool) => tool.name === "review")?.description || "", /WORKER_LITE_LLM=0/);
-    assert.match(listed.tools.find((tool) => tool.name === "draft")?.description || "", /WORKER_LITE_LLM=0/);
+    const listedNames = listed.tools.map((tool) => tool.name);
+    assert(!listedNames.includes("analyze"));
+    assert(!listedNames.includes("review"));
+    assert.match(listed.tools.find((tool) => tool.name === "draft")?.description || "", /disabled by default/i);
 
-    const analyze = payloadFrom(
-      await client.callTool({ name: "analyze", arguments: { prompt: "Read the changed source", files: [sourceFile] } })
-    );
-    assert.equal(analyze.status, "ok");
-    assert.equal(analyze.llm, "disabled");
-    assert.equal(analyze.evidence_only, true);
-    assert.equal(analyze.fallback_used, "read_pack");
-    assert.equal(typeof analyze.context_pack?.receipt, "object");
-
-    const fileReview = payloadFrom(await client.callTool({ name: "review", arguments: { files: [sourceFile] } }));
-    assert.equal(fileReview.status, "ok");
-    assert.equal(fileReview.llm, "disabled");
-    assert.equal(fileReview.fallback_used, "local_diff_summary");
-    assert(Array.isArray(fileReview.hunk_headers));
-
-    const jobReview = payloadFrom(await client.callTool({ name: "review", arguments: { job_id: job.id } }));
-    assert.equal(jobReview.status, "ok");
-    assert.equal(jobReview.fallback_used, "diff_digest");
-    assert.deepEqual(jobReview.changed_files, ["src/a.txt"]);
-    assert.deepEqual(jobReview.checks, ["build: passed"]);
-    assert.deepEqual(jobReview.diff_digest?.changed_files, ["src/a.txt"]);
-    assert.equal(jobReview.diff_digest?.truncated, true);
-    assert.equal(jobReview.receipt.truncated, true);
-    assert(jobReview.receipt.artifact_refs.length > 0, "stored job diff must remain available as an artifact");
-    const diffSlice = artifacts.getArtifactSlice({ artifact_ref: jobReview.receipt.artifact_refs[0], limit: 2_000 }) as any;
-    assert.match(String(diffSlice.text), /\+new/);
-
-    toolErrorControl.resetToolControlState();
-    toolErrorControl.recordToolControlOutcome("review", "review", "error", { error_message: "upstream returned 404 (first)" });
-    toolErrorControl.recordToolControlOutcome("review", "review", "error", { error_message: "upstream returned 404 (second)" });
-    assert.equal(toolErrorControl.getToolControlDecision("review", "review")?.action, "degrade");
-    const degradedJobReview = payloadFrom(await client.callTool({ name: "review", arguments: { job_id: job.id } }));
-    assert.equal(degradedJobReview.status, "degraded");
-    assert.equal(degradedJobReview.fallback_used, "diff_digest");
-    assert.deepEqual(degradedJobReview.diff_digest?.changed_files, ["src/a.txt"]);
-    assert.equal(degradedJobReview.diff_digest?.truncated, true);
-    assert.equal(degradedJobReview.receipt.truncated, true);
-    assert(degradedJobReview.receipt.artifact_refs.length > 0, "degraded review must preserve the stored job diff artifact");
-    toolErrorControl.resetToolControlState();
+    for (const name of ["analyze", "review"]) {
+      const response = await client.callTool({ name, arguments: {} });
+      assert.notEqual(response.isError, true, `${name} must fail as a structured payload`);
+      const payload = payloadFrom(response);
+      assert.equal(payload.contract_version, "outcome.v1");
+      assert.equal(payload.outcome?.status, "failed");
+      assert.equal(payload.status, "error");
+      assert.equal(payload.category, "unknown");
+      assert.equal(payload.error?.message, `Tool not found: ${name}`);
+      assert(!payload.fallback?.alternatives?.includes(name));
+    }
+    assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name), listedNames, "stale tool calls must not close the transport");
 
     const failedStart = payloadFrom(
       await client.callTool({
@@ -179,7 +131,6 @@ try {
     assert.equal(failedJob.failure_digest, undefined, "WORKER_FAILURE_DIGEST=1 must still skip job digests when lite LLM is disabled");
     jobs.delete(failedStart.job_id);
   } finally {
-    jobs.delete(job.id);
     await client.close();
     await server.close();
   }
@@ -193,8 +144,7 @@ try {
     .filter(Boolean)
     .map((line) => JSON.parse(line));
   const evidenceCalls = metricRows.filter((row) => row.event === "tool_call" && ["analyze", "review"].includes(row.tool));
-  assert(evidenceCalls.length >= 3);
-  assert(evidenceCalls.every((row) => row.lite_llm === "disabled"));
+  assert.equal(evidenceCalls.length, 0);
   assert.equal(metricRows.some((row) => row.route !== "worker" && (row.prompt_tokens > 0 || row.completion_tokens > 0)), false);
 
   const gateMetrics = path.join(root, "stats-gate.jsonl");
@@ -204,14 +154,14 @@ try {
     "utf8"
   );
   const gateEnv = { ...process.env, WORKER_RATIO_REQUIRED_CATEGORIES: "diff_digest" };
-  const disabledGate = spawnSync(process.execPath, ["scripts/stats.mjs", "--gate", gateMetrics], {
+  const defaultGate = spawnSync(process.execPath, ["scripts/stats.mjs", "--gate", gateMetrics], {
     cwd: process.cwd(),
     encoding: "utf8",
-    env: { ...gateEnv, WORKER_LITE_LLM: "0" }
+    env: gateEnv
   });
-  assert.equal(disabledGate.status, 0, disabledGate.stderr || disabledGate.stdout);
-  assert.match(disabledGate.stdout, /lite_llm_disabled\ttrue/);
-  assert.match(disabledGate.stdout, /diff_digest_red_team_ratio\t0\.0%/);
+  assert.equal(defaultGate.status, 0, defaultGate.stderr || defaultGate.stdout);
+  assert.match(defaultGate.stdout, /lite_llm_disabled\ttrue/);
+  assert.match(defaultGate.stdout, /diff_digest_red_team_ratio\t0\.0%/);
 
   const enabledGate = spawnSync(process.execPath, ["scripts/stats.mjs", "--gate", gateMetrics], {
     cwd: process.cwd(),

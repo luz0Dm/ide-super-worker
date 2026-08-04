@@ -2,7 +2,6 @@ import type {
   AbnormalOutputAssessment,
   AbnormalOutputIssue,
   AbnormalReasonCode,
-  AbnormalReviewerHint,
   WorkerReceipt
 } from "./types.js";
 
@@ -55,18 +54,6 @@ function repairPrompt(issue: AbnormalOutputIssue, receipt: ReceiptForAssessment)
     return `${common} Rebuild the receipt with valid route, tool, category, byte counts, artifact_refs, truncation, cache, and status fields.`;
   }
   return `${common} Provide concise evidence, a stable reason_code, and a bounded repair action.`;
-}
-
-function reviewerHint(issue: AbnormalOutputIssue): AbnormalReviewerHint | undefined {
-  if (issue.reason_code !== "failed_check" && issue.reason_code !== "review_disagreement") return undefined;
-  return {
-    required: true,
-    route: "cheap_review",
-    tool: "review",
-    reason_code: issue.reason_code,
-    focus: "Verify the compact evidence and decide whether another repair pass is justified.",
-    max_tokens: 512
-  };
 }
 
 export function assessAbnormalReceipt(
@@ -131,14 +118,12 @@ export function assessAbnormalReceipt(
     };
   }
 
-  const reviewer = reviewerHint(issue);
   return {
     verdict: issue.reason_code === "schema_error" ? "reject" : "repair",
     reason_code: issue.reason_code,
     confidence: issue.severity === "high" ? 0.96 : 0.94,
     required_action: issue.reason_code === "failed_check" ? "summarize_failure_and_repair" : "repair_payload_contract",
     issues,
-    repair_prompt: repairPrompt(issue, receipt),
-    ...(reviewer ? { reviewer } : {})
+    repair_prompt: repairPrompt(issue, receipt)
   };
 }

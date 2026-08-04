@@ -116,15 +116,7 @@
             "note": "Worker reported an error status; return compact evidence and a repair action instead of raw output."
           }
         ],
-        "repair_prompt": "Repair worker output for get/job_control. Return the same public payload shape, keep existing fields compatible, and do not add extra model calls. Preserve the failed status, include the compact failure evidence, and provide the smallest next repair action.",
-        "reviewer": {
-          "required": true,
-          "route": "cheap_review",
-          "tool": "review",
-          "reason_code": "failed_check",
-          "focus": "Verify the compact evidence and decide whether another repair pass is justified.",
-          "max_tokens": 512
-        }
+        "repair_prompt": "Repair worker output for get/job_control. Return the same public payload shape, keep existing fields compatible, and do not add extra model calls. Preserve the failed status, include the compact failure evidence, and provide the smallest next repair action."
       }
     }
   },

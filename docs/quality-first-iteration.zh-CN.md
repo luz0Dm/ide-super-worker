@@ -1,18 +1,19 @@
 # 质量优先迭代说明 / Quality-first iteration guide
 
-本版本新增可选的 `quality_mode:"high"`。它为 `analyze` 与 `review` 提供
-**失败即停止（fail-closed）** 的高质量路径；默认仍是原有 `standard` 路径。
+> 内部历史资料 / Internal historical material：质量与 fan-out 模块仅保留用于
+> 评估和开发，没有公开 MCP 入口。公开调用方通过 `read_pack`、`diff_digest` 和
+> `get_artifact_slice` 获取证据，由主模型完成分析、判断和代码审阅。
+> `WORKER_LITE_LLM` 不会暴露这些模块；`semantic_gate` 是独立的执行后验证控制。
 
-This release adds the optional `quality_mode:"high"` for `analyze` and
-`review`. It is a **fail-closed** quality path; the existing `standard` path
-remains the default.
+The internal `quality_mode:"high"` experiment is **fail-closed**. It is not a
+public MCP option.
 
 ## 1. 运行时闭环 / Runtime flow
 
 ```mermaid
 flowchart LR
-  A[请求 / Request] --> B{quality_mode}
-  B -->|standard| C[既有单路或 fanout 契约\nExisting contract]
+  A[内部测试请求 / Internal test] --> B{quality_mode}
+  B -->|standard| C[旧版单路或 fanout 契约\nLegacy contract]
   B -->|high| D[固定三分支：主分析 / 独立 / 红队\nThree fixed branches]
   D --> E[独立审阅器\nIndependent adjudicator]
   E --> F{证据、引用、思考信号、结论\ncomplete and valid?}
@@ -37,7 +38,7 @@ high/critical findings.
 | --- | --- | --- |
 | 并发取消 / Cancellation | 本地 FIFO 信号量支持 `AbortSignal`，已取消的排队请求会移出队列。 | 不会让已取消请求占用后续容量。 / Cancelled requests no longer consume later capacity. |
 | 可观测性 / Observability | Lite 成功与缓存记录队列等待、上游、端到端耗时及尝试次数。 | 可定位慢在排队、服务商还是重试。 / Latency can be attributed to queueing, upstream work, or retries. |
-| 生命周期 / Lifecycle | 无运行任务时，worker 默认 5 分钟空闲后退出；`WORKER_IDLE_EXIT_MS=0` 可关闭。 | 减少长期空闲进程；每个 MCP 请求会刷新计时器。 / Reduces idle processes; each request refreshes the timer. |
+| 生命周期 / Lifecycle | worker 默认常驻；只有显式设置正数 `WORKER_IDLE_EXIT_MS` 才会在无运行任务时空闲退出。 | 避免活跃 MCP 会话出现意外 `Transport closed`；显式超时仍会被每个请求刷新。 / Avoids unexpected transport closure; an explicit timeout is reset by each request. |
 | 失败语义 / Failure semantics | `codex:audit`、`stats:gate`、`codex:guard` 的策略失败分类为可修复 gate failure。 | 调用方能区分策略门禁与工具崩溃。 / Callers can distinguish policy gates from tool crashes. |
 
 高质量路径的内部截止时间是 270 秒：15 秒获取队列、195 秒供分支共享、余下时间
@@ -56,8 +57,8 @@ flowchart LR
   C --> D{相同盲评与冻结配置要求}
   D -->|pass| E[Trial C\n直连 premium vs 完整生产链路]
   E --> F{两类下界 > 0\n无 candidate-only critical defect}
-  F -->|pass| G[可考虑改变默认路由\nEligible for default-routing decision]
-  B -->|fail/inconclusive| H[保持显式选择\nKeep explicit opt-in]
+  F -->|pass| G[支持内部研究结论\nSupports an internal finding]
+  B -->|fail/inconclusive| H[保持内部实验状态\nRemain internal]
   D -->|fail/inconclusive| H
   F -->|fail/inconclusive| H
 ```
@@ -86,9 +87,10 @@ npm run codex:guard
 
 单元测试通过、工程试点完成，或单次高质量请求成功，**都不构成** 质量认证或默认
 启用授权。只有真实且冻结的任务、盲评、保留证据，以及通过 Trial A → B → C 的
-资格门禁后，才可以讨论改变默认路由。
+资格门禁后，才可以形成内部研究结论；这些结果不会创建公开 MCP 入口。
 
 Passing unit tests, completing an engineering pilot, or seeing one successful
 high-mode request **does not** certify quality or authorize a default change.
 Only real frozen tasks, blind evaluation, retained evidence, and a passed
-Trial A → B → C qualification gate make a default-routing decision eligible.
+Trial A → B → C qualification gate can support an internal finding; they do not
+create or authorize a public MCP entry point.

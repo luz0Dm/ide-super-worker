@@ -23,6 +23,9 @@ function readIntegerEnv(name: string, fallback: number, min: number, max: number
   return Math.min(max, Math.max(min, Math.trunc(parsed)));
 }
 
+export const DEFAULT_IDLE_EXIT_MS = 0;
+export const IDLE_EXIT_MS = readIntegerEnv("WORKER_IDLE_EXIT_MS", DEFAULT_IDLE_EXIT_MS, 0, 2_147_483_647);
+
 function isInsideDirectory(child: string, parent: string): boolean {
   const relative = path.relative(parent, child);
   return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
@@ -66,7 +69,7 @@ export const FAILURE_DIGEST_ENABLED = readBooleanEnv("WORKER_FAILURE_DIGEST", fa
 export const DIGEST_BEFORE_REVISE = readBooleanEnv("WORKER_DIGEST_BEFORE_REVISE", true);
 export const ADAPTER_PREFIX_CACHE = readBooleanEnv("ADAPTER_PREFIX_CACHE", false);
 export const LITE_MODEL = (process.env.WORKER_LITE_MODEL || "").trim();
-export const LITE_LLM_ENABLED = readBooleanEnv("WORKER_LITE_LLM", true);
+export const LITE_LLM_ENABLED = readBooleanEnv("WORKER_LITE_LLM", false);
 export const LITE_CACHE_DIR = readLiteCacheDir();
 export const LITE_CACHE_TTL_MS = readIntegerEnv("WORKER_LITE_CACHE_TTL_MS", 60 * 60 * 1000, 0, 24 * 60 * 60 * 1000);
 export const CHECK_TIMEOUT_MS = readIntegerEnv("CHECK_TIMEOUT_MS", 10 * 60 * 1000, 1_000, 60 * 60 * 1000);
@@ -109,7 +112,7 @@ export const LITE_MAX_CONCURRENCY = readIntegerEnv("WORKER_LITE_MAX_CONCURRENCY"
 export const FANOUT_TIMEOUT_MS = readIntegerEnv("WORKER_FANOUT_TIMEOUT_MS", 90_000, 10_000, 300_000);
 
 export const DEFAULT_PERMISSION_MODE = process.env.CLAUDE_PERMISSION_MODE || "acceptEdits";
-export const INCLUDE_DIFF_DEFAULT = readBooleanEnv("INCLUDE_DIFF_DEFAULT", true);
+export const INCLUDE_DIFF_DEFAULT = readBooleanEnv("INCLUDE_DIFF_DEFAULT", false);
 
 // --- Mythos-style deterministic reasoning layer ---
 // MYTHOS_REASONING: attach the deterministic reasoning report to every job.

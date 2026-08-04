@@ -193,7 +193,7 @@ const failedCheckAssessment = abnormalOutput.assessAbnormalReceipt({
   status: "error"
 });
 assert.equal(failedCheckAssessment.reason_code, "failed_check");
-assert.equal(failedCheckAssessment.reviewer?.tool, "review");
+assert(!("reviewer" in failedCheckAssessment));
 const acceptedAssessment = abnormalOutput.assessAbnormalReceipt({
   route: "worker",
   tool: "diff_digest",
@@ -214,8 +214,6 @@ const toolCategories: Record<string, string> = {
   tail: "job_control",
   wait: "job_control",
   cancel: "job_control",
-  analyze: "analysis",
-  review: "review",
   search: "search",
   read_pack: "context_pack",
   diff_digest: "diff_digest",
@@ -400,6 +398,30 @@ const auditFallbackRun = spawnSync(
 assert.equal(auditFallbackRun.status, 0, auditFallbackRun.stderr);
 assert(auditFallbackRun.stderr.includes("[warn] fallback ratio 50.0% exceeds 10%"));
 
+const auditEvidenceFile = path.join(root, "metrics-audit-evidence-defaults.jsonl");
+fs.writeFileSync(
+  auditEvidenceFile,
+  ["search", "context_pack", "command_digest", "diff_digest"]
+    .map((category) =>
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        event: "tool_call",
+        route: "worker",
+        tool: category,
+        category,
+        status: "ok"
+      })
+    )
+    .join("\n"),
+  "utf8"
+);
+const auditEvidenceRun = spawnSync(process.execPath, ["scripts/codex_audit.mjs", auditEvidenceFile], {
+  cwd: process.cwd(),
+  encoding: "utf8"
+});
+assert.equal(auditEvidenceRun.status, 0, auditEvidenceRun.stderr);
+assert.doesNotMatch(auditEvidenceRun.stderr, /category: (analysis|review)/);
+
 const statsGatePassFile = path.join(root, "metrics-gate-pass.jsonl");
 fs.writeFileSync(
   statsGatePassFile,
@@ -489,6 +511,26 @@ const statsSingleToolErrorRun = spawnSync(process.execPath, ["scripts/stats.mjs"
 assert.equal(statsSingleToolErrorRun.status, 2);
 assert(statsSingleToolErrorRun.stdout.includes("command_digest\tshell\t100\t0\t0\t100.0%\t-\tdetail\t3.0%\t0"));
 assert(statsSingleToolErrorRun.stderr.includes("command_digest/shell error rate 3.0% must stay below 3%"));
+
+const statsFailureClassFile = path.join(root, "metrics-failure-class.jsonl");
+fs.writeFileSync(
+  statsFailureClassFile,
+  JSON.stringify({
+    event: "tool_call",
+    route: "worker",
+    tool: "shell",
+    category: "command_digest",
+    status: "error",
+    failure_class: "shell_mismatch"
+  }),
+  "utf8"
+);
+const statsFailureClassRun = spawnSync(process.execPath, ["scripts/stats.mjs", statsFailureClassFile], {
+  cwd: process.cwd(),
+  encoding: "utf8"
+});
+assert.equal(statsFailureClassRun.status, 0, statsFailureClassRun.stderr);
+assert(statsFailureClassRun.stdout.includes("command_digest\tshell\tshell_mismatch\t"));
 
 const toolErrorControlFile = path.join(root, "metrics-tool-error-control.jsonl");
 const now = new Date();

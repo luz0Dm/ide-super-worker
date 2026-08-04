@@ -43,6 +43,7 @@ process.env.WORKER_GLOBAL_LITE_QUEUE_MAX = "6";
 process.env.WORKER_GLOBAL_COORDINATION_DIR = coordination;
 process.env.WORKER_GLOBAL_ACQUIRE_TIMEOUT_MS = "15000";
 process.env.WORKER_LITE_CACHE_DIR = path.join(root, "cache");
+process.env.WORKER_LITE_LLM = "1";
 process.env.WORKER_METRICS_FILE = metrics;
 process.env.WORKER_QUALITY_TARGETS_FILE = targetsFile;
 for (const name of ["QUALITY_KEY_A", "QUALITY_KEY_B", "QUALITY_KEY_C", "QUALITY_REVIEW_KEY"]) process.env[name] = `secret-${name}`;
@@ -229,54 +230,7 @@ try {
   assert(maskedCritical.reason_codes.includes("quality_synthesis_unparsed_or_incomplete"));
 
   reviewerApprovesSevere = false;
-  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
-  const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
-  const { createCodexWorkerServer } = await import("../server.js");
-  const server = createCodexWorkerServer();
-  const client = new Client({ name: "quality-mode-contract-test", version: "1.0.0" }, { capabilities: {} });
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  try {
-    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-    const listed = await client.listTools();
-    for (const name of ["analyze", "review"]) {
-      const tool = listed.tools.find((candidate) => candidate.name === name);
-      assert(tool, `missing ${name} tool`);
-      const property = (tool.inputSchema as any).properties?.quality_mode;
-      assert.deepEqual(property?.enum, ["standard", "high"]);
-    }
-    const response = await client.callTool({
-      name: "analyze",
-      arguments: { prompt: "MCP high mode", files: [sourceFile], quality_mode: "high" }
-    });
-    const text = (response.content as Array<{ type: string; text?: string }>).find((item) => item.type === "text")?.text;
-    assert(text);
-    const payload = JSON.parse(text);
-    assert.equal(payload.contract_version, "quality.v1");
-    assert.equal(payload.status, "qualified");
-
-    const invalidResponse = await client.callTool({
-      name: "analyze",
-      arguments: { prompt: "invalid path", files: [path.join(root, "missing.ts")] }
-    });
-    const invalidText = (invalidResponse.content as Array<{ type: string; text?: string }>).find((item) => item.type === "text")?.text;
-    assert(invalidText);
-    const invalidPayload = JSON.parse(invalidText);
-    assert.equal(invalidPayload.status, "rejected");
-  } finally {
-    await client.close();
-    await server.close();
-  }
-
   const metricText = fs.readFileSync(metrics, "utf8");
-  const metricRows = metricText.trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
-  assert(
-    metricRows.some((row) => row.event === "tool_call" && row.tool === "analyze" && row.status === "rejected"),
-    "invalid analyze paths must be audited as rejected caller input"
-  );
-  assert(
-    !metricRows.some((row) => row.event === "tool_call" && row.tool === "analyze" && row.status === "error" && /missing\.ts/.test(row.error_message || "")),
-    "invalid analyze paths must not inflate tool execution error rate"
-  );
   for (const secretName of ["QUALITY_KEY_A", "QUALITY_KEY_B", "QUALITY_KEY_C", "QUALITY_REVIEW_KEY"]) {
     assert(!metricText.includes(String(process.env[secretName])), "metrics must not contain quality API keys");
   }

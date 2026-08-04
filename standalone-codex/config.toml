@@ -1,0 +1,59 @@
+# 独立 Codex 配置 - 专用于 ide-super-worker MCP
+# 使用方法: 运行 start-codex.bat 启动
+# 此配置不影响原有的 ~/.codex/config.toml
+
+model = "gpt-5.6-sol"
+sandbox_mode = "workspace-write"
+personality = "pragmatic"
+service_tier = "default"
+model_provider = "openai"
+
+[mcp_servers.codex_async_worker]
+type = "stdio"
+command = "node"
+args = ["/path/to/ide-super-worker/dist/index.js"]
+cwd = "/path/to/ide-super-worker"
+enabled = true
+startup_timeout_sec = 20
+tool_timeout_sec = 3600
+env_vars = ["ONEAPI_API_KEY", "FALLBACK_API_KEY"]
+
+[mcp_servers.codex_async_worker.env]
+ADAPTER_ENABLE_THINKING = "0"
+CLAUDE_CODE_COMMAND = "%USERPROFILE%/.local/bin/claude.exe"
+CLAUDE_CODE_MODEL = "sonnet"
+CLAUDE_CODE_BARE = "1"
+CLAUDE_MODEL = "Qwen3.6-35B-A3B-APEX-I-Compact.gguf"
+CLAUDE_SETTING_SOURCES = "project,local"
+CLAUDE_PERMISSION_MODE = "acceptEdits"
+FALLBACK_BASE_URL = "https://apihub.agnes-ai.com/v1"
+FALLBACK_ESCALATE_MODEL = "agnes-2.0-flash"
+FALLBACK_MODEL = "agnes-2.0-flash"
+MAX_RUNNING_JOBS = "1"
+WORKER_GLOBAL_COORDINATION_DIR = "%LOCALAPPDATA%/ide-super-worker/coordination"
+WORKER_GLOBAL_HEAVY_MAX = "1"
+WORKER_GLOBAL_HEAVY_QUEUE_MAX = "8"
+WORKER_GLOBAL_LITE_MAX = "1"
+WORKER_GLOBAL_LITE_QUEUE_MAX = "12"
+WORKER_GLOBAL_ACQUIRE_TIMEOUT_MS = "600000"
+WORKER_LITE_MAX_CONCURRENCY = "1"
+WORKER_FANOUT_ENABLED = "0"
+ONEAPI_BASE_URL = "https://your-gateway.example.com/v1"
+SANDBOX_ROOT = "D:/"
+USE_OPENAI_ADAPTER = "1"
+WAIT_DEFAULT_MS = "1800000"
+WORKER_ESCALATE_MODEL = "agnes-2.0-flash"
+WORKER_ISOLATION = "worktree"
+WORKER_LITE_MODEL = "Qwen3.6-35B-A3B.gguf"
+WORKER_METRICS_FILE = "/path/to/ide-super-worker/.worker-metrics.jsonl"
+WORKER_WORKTREE_DIR = "/path/to/.worker-worktrees"
+MAX_STORED_JOBS = "200"
+
+[mcp_servers.codex_async_worker.tools.map]
+approval_mode = "approve"
+
+[mcp_servers.codex_async_worker.tools.search]
+approval_mode = "approve"
+
+[mcp_servers.codex_async_worker.tools.analyze]
+approval_mode = "approve"

@@ -113,15 +113,6 @@ export interface AbnormalOutputIssue {
   note: string;
 }
 
-export interface AbnormalReviewerHint {
-  required: boolean;
-  route: "cheap_review";
-  tool: "review";
-  reason_code?: AbnormalReasonCode;
-  focus: string;
-  max_tokens: number;
-}
-
 export interface AbnormalOutputAssessment {
   verdict: AbnormalVerdict;
   reason_code?: AbnormalReasonCode;
@@ -129,7 +120,6 @@ export interface AbnormalOutputAssessment {
   required_action?: string;
   issues: AbnormalOutputIssue[];
   repair_prompt?: string;
-  reviewer?: AbnormalReviewerHint;
 }
 
 export interface WorkerReceipt {

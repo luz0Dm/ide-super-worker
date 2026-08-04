@@ -22,7 +22,6 @@ async function main(): Promise<void> {
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name).sort();
   const expected = [
-    "analyze",
     "apply_edits",
     "cancel",
     "diff_digest",
@@ -31,7 +30,6 @@ async function main(): Promise<void> {
     "get_artifact_slice",
     "history",
     "read_pack",
-    "review",
     "search",
     "shell",
     "start",
@@ -50,6 +48,24 @@ async function main(): Promise<void> {
     throw new Error("Expected start schema to expose verification_policy and the real semantic reviewer contract");
   }
 
+  for (const name of ["analyze", "review"]) {
+    const stale = await client.callTool({ name, arguments: {} });
+    if (stale.isError) throw new Error(`Expected stale ${name} calls to return a structured payload`);
+    const staleContent = Array.isArray(stale.content) ? (stale.content as Array<{ text?: unknown }>) : [];
+    const stalePayload = JSON.parse(String(staleContent[0]?.text || "{}"));
+    if (
+      stalePayload.contract_version !== "outcome.v1" ||
+      stalePayload.status !== "error" ||
+      stalePayload.category !== "unknown" ||
+      stalePayload.error?.message !== `Tool not found: ${name}`
+    ) {
+      throw new Error(`Expected stale ${name} calls to return Tool not found without closing the transport`);
+    }
+  }
+  if ((await client.listTools()).tools.length !== expected.length) {
+    throw new Error("Expected the transport to stay connected after stale tool calls");
+  }
+
   const missing = await client.callTool({ name: "get", arguments: { job_id: "missing-job" } });
   if (missing.isError) {
     throw new Error("Expected get(missing-job) to return a structured error payload, not MCP isError");
@@ -57,13 +73,13 @@ async function main(): Promise<void> {
   const missingContent = Array.isArray(missing.content) ? (missing.content as Array<{ text?: unknown }>) : [];
   const missingPayload = JSON.parse(String(missingContent[0]?.text || "{}"));
   if (
-    missingPayload.contract_version !== "outcome.v1" ||
-    missingPayload.outcome?.status !== "rejected" ||
-    missingPayload.status !== "rejected" ||
+    missingPayload.status !== "ok" ||
+    missingPayload.degraded !== true ||
+    missingPayload.degradation_reason !== "job_not_found_or_expired" ||
     !missingPayload.fallback?.action ||
     missingPayload.receipt?.status !== "ok"
   ) {
-    throw new Error("Expected get(missing-job) to include Outcome v1 plus the frozen legacy rejection payload");
+    throw new Error("Expected get(missing-job) to return the structured degraded payload");
   }
 
   const badSearch = await client.callTool({ name: "search", arguments: { pattern: "never-matches", dirs: [path.join(cwd, "__missing__")] } });
@@ -73,13 +89,12 @@ async function main(): Promise<void> {
   const badSearchContent = Array.isArray(badSearch.content) ? (badSearch.content as Array<{ text?: unknown }>) : [];
   const badSearchPayload = JSON.parse(String(badSearchContent[0]?.text || "{}"));
   if (
-    badSearchPayload.contract_version !== "outcome.v1" ||
-    badSearchPayload.outcome?.status !== "rejected" ||
-    badSearchPayload.status !== "rejected" ||
-    !badSearchPayload.fallback?.action ||
+    badSearchPayload.degraded !== true ||
+    !String(badSearchPayload.degradation_reason || "").includes("missing or inaccessible") ||
+    badSearchPayload.count !== 0 ||
     badSearchPayload.receipt?.status !== "ok"
   ) {
-    throw new Error("Expected search(bad-dir) to include Outcome v1 plus the frozen legacy rejection payload");
+    throw new Error("Expected search(bad-dir) to return the structured degraded payload");
   }
 
   await client.close();

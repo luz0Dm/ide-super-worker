@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
   <title id="title">IDE Super Worker efficiency lane</title>
-  <desc id="desc">A before and after diagram showing direct AI coding workflows burning premium context while IDE Super Worker routes search, read-only analysis, implementation loops, checks, and compact evidence through a faster cheaper lane.</desc>
+  <desc id="desc">A before and after diagram showing direct AI coding workflows burning premium context while IDE Super Worker routes search, read-only evidence packing, implementation loops, checks, and compact evidence through a faster cheaper lane.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#f8fbff"/>
@@ -80,8 +80,8 @@
     <text x="56" y="263" class="boxText">0 LLM calls</text>
 
     <rect x="184" y="202" width="130" height="82" rx="10" fill="#f7fbff" stroke="#d6e4f0"/>
-    <text x="206" y="235" class="boxTitle">analyze</text>
-    <text x="206" y="263" class="boxText">one cheap call</text>
+    <text x="206" y="235" class="boxTitle">read_pack</text>
+    <text x="206" y="263" class="boxText">0 LLM calls</text>
 
     <rect x="334" y="202" width="134" height="82" rx="10" fill="#f7fbff" stroke="#d6e4f0"/>
     <text x="356" y="235" class="boxTitle">start</text>

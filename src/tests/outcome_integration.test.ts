@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { getArtifactSlice } from "../artifacts.js";
 import { SANDBOX_ROOT } from "../config.js";
 import { createJobState, jobs, setTerminalStatus } from "../jobs.js";
 import { buildReliabilityProfile } from "../reliability.js";
@@ -26,6 +27,17 @@ import { collectChangedFiles, collectWorkspaceSummary, findOutOfScopeChanges } f
 
 const cwd = process.cwd();
 const checks: CheckCommand[] = [{ name: "unit", command: "npm test" }];
+
+function readArtifact(ref: string): string {
+  let offset = 0;
+  let text = "";
+  while (true) {
+    const slice = getArtifactSlice({ artifact_ref: ref, offset, limit: 64_000 }) as any;
+    text += String(slice.text);
+    if (!slice.truncated) return text;
+    offset += slice.limit;
+  }
+}
 
 function git(repo: string, ...args: string[]): void {
   execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
@@ -588,6 +600,27 @@ await withTempRepo(async (repo) => {
 }
 
 {
+  const job = makeLegacyFixtureJob("large-compact-job");
+  const fullDiff = `diff --git a/src/large.ts b/src/large.ts\n${"d".repeat(1_000_000)}`;
+  const fullSummary = `implemented\n${"r".repeat(1_000_000)}`;
+  job.launchInput.include_diff = true;
+  job.result.diff = fullDiff;
+  job.result.result = fullSummary;
+  const payload = publicJob(job, true, false) as Record<string, any>;
+  assert(
+    Buffer.byteLength(JSON.stringify(payload), "utf8") <= 16_000,
+    `job response was ${Buffer.byteLength(JSON.stringify(payload), "utf8")} bytes`
+  );
+  assert(payload.receipt.summary_bytes <= 16_000);
+  assert(payload.diff.length < fullDiff.length);
+  assert(payload.summary.length < fullSummary.length);
+  assert.equal(payload.receipt.artifact_refs.length, 1);
+  const fullEvidence = JSON.parse(readArtifact(payload.receipt.artifact_refs[0]));
+  assert.equal(fullEvidence.diff, fullDiff);
+  assert.equal(fullEvidence.summary, fullSummary);
+}
+
+{
   const compatibilityJob = makeLegacyFixtureJob();
   const payload = legacyProjection(publicJob(compatibilityJob));
   const fixtureText = fs.readFileSync("src/tests/fixtures/job_payload_2_5.json", "utf8");
@@ -799,8 +832,8 @@ const legacyPayloadMatrix: Record<string, any> = {
   const fixtureText = fs.readFileSync("src/tests/fixtures/legacy_payload_matrix_2_5.json", "utf8");
   assert.equal(
     createHash("sha256").update(fixtureText).digest("hex"),
-    "2c55bc1602ca4b3d2c0f5f2f85afd2443d36e6e4480975021a47842e97421737",
-    "the frozen 2.5 legacy payload matrix hash changed"
+    "44a172a833ddab39a15d4781fbe2af8a47eddc65ec4a32748c9734f867bbea19",
+    "the frozen legacy payload matrix changed; update only for an intentional public contract break"
   );
   assert.deepEqual(
     legacyPayloadMatrix,

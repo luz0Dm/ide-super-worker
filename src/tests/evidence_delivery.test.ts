@@ -16,6 +16,7 @@ process.env.WORKER_METRICS_FILE = "";
 
 const workerTools = await import("../worker_tools.js");
 const artifacts = await import("../artifacts.js");
+const evidenceDelivery = await import("../evidence_delivery.js");
 
 function gitStatus(): string {
   const result = spawnSync("git", ["status", "--porcelain"], {
@@ -75,6 +76,15 @@ const largeLines = [
 ];
 fs.writeFileSync(largeFile, `${largeLines.join("\n")}\n`, "utf8");
 
+const tailPack = workerTools.buildContextPack({
+  task: "find evidenceNeedleTail",
+  paths: ["src/large.ts"],
+  base_dir: project,
+  max_bytes_per_file: 120_000,
+  window_lines: 2
+}) as any;
+assert(tailPack.files[0].slices.some((slice: any) => String(slice.text).includes("TAIL-MARKER")));
+
 const largePack = workerTools.buildContextPack({
   task: "find evidenceNeedle",
   paths: ["src/empty.ts", "src/large.ts", "src/small.ts"],
@@ -123,5 +133,23 @@ assert.equal(cappedPack.truncated, true);
 assert(cappedPack.packed_bytes <= 500_000);
 assert(cappedPack.receipt.summary_bytes <= 16_000);
 assert.equal(cappedPack.receipt.artifact_refs.length, 1);
+
+const fullSearchResult = {
+  mode: "lines" as const,
+  results: Array.from({ length: 500 }, (_, index) => `src/file-${index}.ts:${index + 1}:${"s".repeat(180)}`),
+  count: 500,
+  truncated: false,
+  engine: "rg" as const
+};
+const deliveredSearch = evidenceDelivery.deliverSearchResult({ pattern: "needle" }, fullSearchResult) as any;
+assert(
+  Buffer.byteLength(JSON.stringify(deliveredSearch), "utf8") <= 16_000,
+  `search response was ${Buffer.byteLength(JSON.stringify(deliveredSearch), "utf8")} bytes`
+);
+assert(deliveredSearch.receipt.summary_bytes <= 16_000);
+assert.equal(deliveredSearch.truncated, true);
+assert.equal(deliveredSearch.receipt.artifact_refs.length, 1);
+const fullSearchArtifact = JSON.parse(readArtifact(deliveredSearch.receipt.artifact_refs[0]));
+assert.deepEqual(fullSearchArtifact.results, fullSearchResult.results);
 
 console.log("evidence delivery tests passed");

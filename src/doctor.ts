@@ -1,5 +1,4 @@
 import "./env.js"; // load .env before config reads process.env
-import * as path from "node:path";
 import { checkClaudeCli, resolveClaudeCommand } from "./claude.js";
 import { clampMaxTokens, ensureAnthropicOpenAIAdapter, shouldUseOpenAIAdapter, thinkStripEnabled } from "./anthropic_openai_adapter.js";
 import {
@@ -14,13 +13,16 @@ import {
   getGatewayApiKey,
   getGatewayBaseUrl,
   getModelName,
+  INCLUDE_DIFF_DEFAULT,
   JOB_TTL_MS,
+  LITE_LLM_ENABLED,
   LOG_BUFFER_MAX,
   RAW_STREAM_MAX,
   SERVER_VERSION,
   SANDBOX_ROOT,
   WAIT_DEFAULT_MS
 } from "./config.js";
+import { INLINE_RESPONSE_MAX_BYTES } from "./evidence_delivery.js";
 import { resolvedMetricsFile } from "./metrics.js";
 
 function isLocalHttp(url: URL): boolean {
@@ -131,8 +133,10 @@ async function main(): Promise<void> {
   console.log(`  adapter qwen thinking: ${process.env.ADAPTER_ENABLE_THINKING === "1" ? "enabled" : "disabled"}`);
   console.log(`  adapter strip <think>: ${thinkStripEnabled() ? "enabled" : "disabled"}`);
   console.log(`  adapter max tokens clamp: ${process.env.ADAPTER_MAX_TOKENS ? clampMaxTokens(undefined) : "(off)"}`);
+  console.log(`  worker LLM judgment: ${LITE_LLM_ENABLED ? "enabled (explicit opt-in)" : "disabled (main model analyzes evidence)"}`);
+  console.log(`  include diff by default: ${INCLUDE_DIFF_DEFAULT ? "yes" : "no"}`);
+  console.log(`  inline response max bytes: ${INLINE_RESPONSE_MAX_BYTES}`);
   console.log(`  metrics file: ${resolvedMetricsFile() || "(not set)"}`);
-  console.log(`  quality targets file: ${process.env.WORKER_QUALITY_TARGETS_FILE ? path.resolve(process.env.WORKER_QUALITY_TARGETS_FILE) : "(not set)"}`);
   console.log(`  adapter heartbeat ms: ${Math.max(1000, Number(process.env.ADAPTER_HEARTBEAT_MS) || 15000)}`);
   console.log(`  log buffer max: ${LOG_BUFFER_MAX}`);
   console.log(`  raw stream max bytes: ${RAW_STREAM_MAX}`);

@@ -1,18 +1,18 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { attachReceipt, createReceipt, getArtifactSlice, saveArtifact } from "./artifacts.js";
 import { ensureAnthropicOpenAIAdapter, shouldUseOpenAIAdapter } from "./anthropic_openai_adapter.js";
 import { classifyToolMetricPayload, type ToolMetricStatus } from "./failure_semantics.js";
-import { analyzeDirect, buildEvidencePack, digestFailure, reviewDirect, reviewWithEvidence } from "./lite.js";
+import { deliverSearchResult, INLINE_RESPONSE_MAX_BYTES } from "./evidence_delivery.js";
+import { digestFailure } from "./lite.js";
 import {
   AUTO_REVISE_ENABLED,
   CHECK_OUTPUT_RESPONSE_MAX,
   DIGEST_BEFORE_REVISE,
-  FANOUT_ENABLED,
   FAILURE_DIGEST_ENABLED,
   INCLUDE_DIFF_DEFAULT,
   LITE_LLM_ENABLED,
@@ -25,13 +25,6 @@ import {
   WAIT_MAX_MS,
   allowBypassPermissions
 } from "./config.js";
-import {
-  checkFanoutAvailability,
-  fanoutCoordinator,
-  validateBranches,
-  validateFanoutEvidence,
-  FanoutValidationError
-} from "./fanout.js";
 import { buildClaudeLaunchPlan, type ClaudeLaunchPlan } from "./claude.js";
 import { parseCheckCommands, runCheckCommands, type CheckResult } from "./checks.js";
 import { heavySemaphore } from "./concurrency.js";
@@ -70,7 +63,6 @@ import { redactSecrets } from "./redact.js";
 import { searchWorkspace } from "./search.js";
 import { validateAllowedDirs, validateScopedPatch } from "./security.js";
 import { runSemanticReview, type SemanticReviewResult } from "./semantic_review.js";
-import { runHighQualityAnalyze, runHighQualityReview } from "./quality_mode.js";
 import {
   getToolControlDecision,
   getToolErrorControlStartDefaults,
@@ -90,7 +82,6 @@ import {
   applyMechanicalEdits,
   buildContextPack,
   digestDiff,
-  digestStoredDiff,
   draftFromChanges,
   gitHistory,
   runWorkerShell
@@ -145,16 +136,6 @@ function fallbackForTool(tool: string, message: string): Record<string, unknown>
       action: "Use an artifact_ref from receipt.artifact_refs and retry with a bounded offset and limit.",
       alternatives: ["get", "wait", "read_pack"]
     },
-    analyze: {
-      retryable: true,
-      action: "Provide a non-empty prompt, narrow files, or fall back to read_pack when the cheap analysis lane is unavailable.",
-      alternatives: ["read_pack", "search"]
-    },
-    review: {
-      retryable: true,
-      action: "Pass either a valid job_id or files. If diff review is unavailable, use diff_digest first and retry review with focused files.",
-      alternatives: ["diff_digest", "read_pack"]
-    },
     search: {
       retryable: true,
       action: "Narrow dirs/glob/max_results. If search still fails, use read_pack on known paths.",
@@ -168,7 +149,7 @@ function fallbackForTool(tool: string, message: string): Record<string, unknown>
     diff_digest: {
       retryable: true,
       action: "Ensure cwd is a git repository and narrow files/max_diff_bytes, then retry.",
-      alternatives: ["review", "shell"]
+      alternatives: ["shell"]
     },
     shell: {
       retryable: true,
@@ -280,8 +261,6 @@ const TOOL_CATEGORIES: Record<string, WorkerCategory> = {
   tail: "job_control",
   wait: "job_control",
   cancel: "job_control",
-  analyze: "analysis",
-  review: "review",
   search: "search",
   read_pack: "context_pack",
   diff_digest: "diff_digest",
@@ -400,12 +379,17 @@ function compactReasoning(report: ReasoningReport | undefined) {
   };
 }
 
+function responseBytes(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
 export function publicJob(job: JobState, includeDiff = job.launchInput.include_diff ?? INCLUDE_DIFF_DEFAULT, verbose = false, tool = "get") {
   const outcome = structuredClone(job.outcome);
   const checks = verbose
     ? job.result.checks || []
-    : (job.result.checks || []).map((line) => truncateResponseText(line, CHECK_OUTPUT_RESPONSE_MAX));
-  const diff = includeDiff ? job.result.diff || "" : "";
+    : (job.result.checks || []).slice(0, 20).map((line) => truncateResponseText(line, CHECK_OUTPUT_RESPONSE_MAX));
+  const fullDiff = job.result.diff || "";
+  const diff = includeDiff ? (verbose ? fullDiff : truncateResponseText(fullDiff, 6_000)) : "";
   const reliability =
     job.reliabilityProfile ||
     buildReliabilityProfile(job.launchInput, { worktree: Boolean(job.worktreePath || job.worktreeBranch) });
@@ -423,21 +407,24 @@ export function publicJob(job: JobState, includeDiff = job.launchInput.include_d
           revise_passes: job.result.revise_passes ?? job.revisePass,
           stage_count: job.stages?.length || 0
         });
-  const baseCompact = {
+  let baseCompact = {
     id: job.id,
     server_version: job.result.server_version || SERVER_VERSION,
     job_status: job.status,
-    changed_files: job.result.changed_files || [],
-    preexisting_changed_files: job.preexistingChangedFiles || [],
+    changed_files: verbose ? job.result.changed_files || [] : (job.result.changed_files || []).slice(0, 200),
+    preexisting_changed_files: verbose ? job.preexistingChangedFiles || [] : (job.preexistingChangedFiles || []).slice(0, 200),
     checks,
     diff,
     reasoning: verbose ? job.result.reasoning : compactReasoning(job.result.reasoning),
     revise_passes: job.result.revise_passes ?? job.revisePass,
     reliability,
     episode,
-    failure_digest: job.result.failure_digest,
+    failure_digest:
+      !verbose && typeof job.result.failure_digest === "string"
+        ? truncateResponseText(job.result.failure_digest, 2_000)
+        : job.result.failure_digest,
     error: job.result.error,
-    summary: job.result.result,
+    summary: verbose ? job.result.result : truncateResponseText(job.result.result || "", 2_000),
     session_id: job.result.session_id,
     duration_ms: job.result.duration_ms,
     total_cost_usd: job.result.total_cost_usd
@@ -453,8 +440,16 @@ export function publicJob(job: JobState, includeDiff = job.launchInput.include_d
     reliability,
     episode
   };
-  const artifact = saveArtifact("job_result", {
+  const fullArtifactPayload = {
     ...legacyArtifactPayload,
+    changed_files: job.result.changed_files || [],
+    preexisting_changed_files: job.preexistingChangedFiles || [],
+    reasoning: job.result.reasoning,
+    stage_index: job.stageIndex,
+    stage_results: job.stageResults
+  };
+  const artifact = saveArtifact("job_result", {
+    ...fullArtifactPayload,
     contract_version: OUTCOME_CONTRACT_VERSION,
     outcome
   });
@@ -462,20 +457,46 @@ export function publicJob(job: JobState, includeDiff = job.launchInput.include_d
     outcome.evidence.artifact_refs = [artifact.artifact_ref];
     job.outcome.evidence.artifact_refs = [artifact.artifact_ref];
   }
-  const receipt = createReceipt({
-    tool,
-    category: "job_control",
-    input: { job_id: job.id, verbose, include_diff: includeDiff },
-    output: legacyArtifactPayload,
-    summary: baseCompact,
-    artifactRefs: artifact ? [artifact.artifact_ref] : [],
-    truncated: !verbose || !includeDiff,
-    status: job.status === "failed" ? "error" : "ok"
-  });
-  const compact = { contract_version: OUTCOME_CONTRACT_VERSION, outcome, ...baseCompact, receipt };
-  if (job.stages?.length) {
-    (compact as Record<string, unknown>).stage_index = job.stageIndex;
-    (compact as Record<string, unknown>).stage_results = job.stageResults;
+  const buildCompact = (summary: typeof baseCompact, includeStages: boolean): any => {
+    const receipt = createReceipt({
+      tool,
+      category: "job_control",
+      input: { job_id: job.id, verbose, include_diff: includeDiff },
+      output: legacyArtifactPayload,
+      summary,
+      artifactRefs: artifact ? [artifact.artifact_ref] : [],
+      truncated: !verbose || !includeDiff,
+      status: job.status === "failed" ? "error" : "ok"
+    });
+    const value: Record<string, unknown> = { contract_version: OUTCOME_CONTRACT_VERSION, outcome, ...summary, receipt };
+    if (includeStages && job.stages?.length) {
+      value.stage_index = job.stageIndex;
+      value.stage_results = job.stageResults;
+    }
+    return value;
+  };
+
+  let compact = buildCompact(baseCompact, true);
+  if (!verbose && responseBytes(compact) > INLINE_RESPONSE_MAX_BYTES) {
+    baseCompact = {
+      ...baseCompact,
+      changed_files: baseCompact.changed_files.slice(0, 50),
+      preexisting_changed_files: baseCompact.preexisting_changed_files.slice(0, 50),
+      checks: baseCompact.checks.slice(0, 5),
+      diff: "",
+      reasoning: undefined,
+      failure_digest:
+        typeof baseCompact.failure_digest === "string"
+          ? truncateResponseText(baseCompact.failure_digest, 1_000)
+          : undefined,
+      error:
+        typeof baseCompact.error === "string" ? truncateResponseText(baseCompact.error, 1_000) : baseCompact.error,
+      summary: truncateResponseText(baseCompact.summary || "", 1_000)
+    };
+    compact = buildCompact(baseCompact, false);
+  }
+  if (!verbose && responseBytes(compact) > INLINE_RESPONSE_MAX_BYTES) {
+    throw new Error("job metadata exceeds the 16000 byte inline budget; inspect the job artifact");
   }
 
   if (!verbose) return compact;
@@ -669,69 +690,6 @@ export function validateSearchPaths(value: unknown): string[] {
   return [...new Set(validated)];
 }
 
-function validateReviewFiles(files: string[]): string[] {
-  return files.map((file) => {
-    if (file.includes("\0")) throw new Error("[Security] NUL byte in review file is rejected");
-    const absolute = path.isAbsolute(file) ? path.resolve(file) : path.resolve(SANDBOX_ROOT, file);
-    let real = absolute;
-    if (fs.existsSync(absolute)) {
-      real = fs.realpathSync.native(absolute);
-    } else {
-      let parent = path.dirname(absolute);
-      while (!fs.existsSync(parent)) {
-        const next = path.dirname(parent);
-        if (next === parent) throw new Error(`[Security] review file has no existing parent: ${file}`);
-        parent = next;
-      }
-      const realParent = fs.realpathSync.native(parent);
-      if (!isInsideDirectory(realParent, SANDBOX_ROOT)) {
-        throw new Error(`[Security] review file escapes SANDBOX_ROOT: ${file}`);
-      }
-    }
-    if (!isInsideDirectory(real, SANDBOX_ROOT)) {
-      throw new Error(`[Security] review file escapes SANDBOX_ROOT: ${file}`);
-    }
-    return absolute;
-  });
-}
-
-function reviewDiffForFiles(files: string[]): { diff?: string; files: string[] } {
-  const validated = validateReviewFiles(files);
-  if (validated.length === 0) return { files: [] };
-  const gitRoot = findGitRoot(path.dirname(validated[0]));
-  if (!gitRoot) return { files: validated };
-  for (const file of validated) {
-    if (!isInsideDirectory(file, gitRoot)) {
-      throw new Error("review files must belong to the same git repository");
-    }
-  }
-  const relativeFiles = validated.map((file) => path.relative(gitRoot, file).replace(/\\/g, "/"));
-  const diff = spawnSync("git", ["-C", gitRoot, "diff", "HEAD", "--", ...relativeFiles], {
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 30_000,
-    maxBuffer: 1024 * 1024
-  });
-  if (diff.error) throw new Error(`review diff failed: ${diff.error.message}`);
-  if (diff.status !== 0) {
-    throw new Error(`review diff failed: ${(diff.stderr || diff.stdout || `git exited ${diff.status}`).slice(0, 500)}`);
-  }
-  return { diff: diff.stdout || "", files: diff.stdout ? [] : validated };
-}
-
-function liteDisabledMarker() {
-  return {
-    status: "ok",
-    llm: "disabled",
-    evidence_only: true,
-    note: "WORKER_LITE_LLM=0: no cheap-LLM judgment was applied. This payload is raw deterministic evidence; conclusions must be drawn by the caller."
-  };
-}
-
-function storedJobDiffDigest(job: JobState) {
-  return digestStoredDiff(job.result.diff || "", job.result.changed_files || []);
-}
-
 async function degradedByToolControl(
   tool: string,
   category: WorkerCategory,
@@ -751,71 +709,6 @@ async function degradedByToolControl(
       expires_at: decision.expiresAt
     }
   };
-
-  if (tool === "review") {
-    const jobId = typeof args.job_id === "string" ? args.job_id : "";
-    const job = jobId ? jobs.get(jobId) : undefined;
-    const files = Array.isArray(args.files) ? args.files.map(String) : [];
-    if (job) {
-      const diffDigest = storedJobDiffDigest(job);
-      const payload = {
-        ...base,
-        fallback_used: "diff_digest",
-        source: "job",
-        job_id: job.id,
-        job_status: job.status,
-        changed_files: job.result.changed_files || [],
-        checks: job.result.checks || [],
-        diff_digest: diffDigest.summary
-      };
-      return attachReceipt(payload, {
-        tool,
-        category,
-        input: args,
-        output: job.result.diff || diffDigest.summary,
-        artifactRefs: diffDigest.artifactRefs,
-        truncated: diffDigest.truncated
-      });
-    }
-    if (files.length > 0) {
-      const fileReview = reviewDiffForFiles(files);
-      const hunkHeaders = (fileReview.diff || "").match(/^@@.*@@.*$/gm)?.slice(0, 12) || [];
-      const payload = {
-        ...base,
-        fallback_used: "local_diff_summary",
-        source: "files",
-        files: fileReview.files.length > 0 ? fileReview.files : files,
-        diff_bytes: Buffer.byteLength(fileReview.diff || "", "utf8"),
-        hunk_headers: hunkHeaders
-      };
-      return attachReceipt(payload, { tool, category, input: args, output: payload });
-    }
-  }
-
-  if (tool === "analyze") {
-    const files = Array.isArray(args.files) ? args.files.map(String) : [];
-    if (files.length > 0) {
-      const pack = buildContextPack({
-        paths: files,
-        task: "analyze degraded route; LLM analysis circuit is open",
-        prompt: typeof args.prompt === "string" ? args.prompt : undefined,
-        max_files: Math.min(files.length, 20),
-        max_bytes_per_file: 8_000
-      });
-      const payload = {
-        ...base,
-        fallback_used: "read_pack",
-        source: "files",
-        context_pack: {
-          file_count: pack.file_count,
-          packed_bytes: pack.packed_bytes,
-          truncated: pack.truncated,
-          receipt: pack.receipt
-        }
-      };
-      return attachReceipt(payload, { tool, category, input: args, output: payload });
-    }
-  }
 
   const legacyPayload = {
     status: "rejected",
@@ -1647,88 +1540,6 @@ export function createCodexWorkerServer(): Server {
         }
       },
       {
-        name: "analyze",
-        description:
-          "Read-only analysis: read the given files (inside SANDBOX_ROOT) and answer in a single cheap-gateway call. Does NOT start Claude Code and does NOT modify any file. Use for summarize/explain/classify; use start for anything that edits or runs. Pass branches for concurrent fan-out analysis (requires WORKER_FANOUT_ENABLED=1). With WORKER_LITE_LLM=0 the standard lane returns a deterministic read_pack evidence pack instead of an LLM answer.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            prompt: { type: "string" },
-            files: { type: "array", items: { type: "string" } },
-            max_tokens: { type: "number" },
-            quality_mode: {
-              type: "string",
-              enum: ["standard", "high"],
-              description: "standard preserves the single-call contract; high runs the fail-closed quality.v1 pipeline. Defaults to standard."
-            },
-            branches: {
-              type: "array",
-              description: "2–3 independent focus areas for concurrent fan-out analysis. Each branch shares the same prompt/files but adds its own focus.",
-              items: {
-                type: "object",
-                properties: {
-                  id: { type: "string" },
-                  focus: { type: "string" },
-                  max_tokens: { type: "number" }
-                },
-                required: ["id", "focus"]
-              }
-            },
-            aggregate: {
-              type: "string",
-              enum: ["strong_review", "none"],
-              description: "When branches are provided, controls whether a synthesis reviewer runs after all branches complete. Defaults to strong_review."
-            },
-            deadline_ms: {
-              type: "number",
-              description: "Shared deadline for all branches and the reviewer. Default 90s, max 300s."
-            }
-          },
-          required: ["prompt"]
-        }
-      },
-      {
-        name: "review",
-        description:
-          "Cheap-gateway code review. Use job_id to review a finished worker diff/checks, or files to review selected sandbox files. Returns structured JSON verdict when parseable. Pass branches for concurrent fan-out review (requires WORKER_FANOUT_ENABLED=1). With WORKER_LITE_LLM=0 the standard lane returns diff_digest/local diff evidence instead of an LLM verdict.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            job_id: { type: "string" },
-            files: { type: "array", items: { type: "string" } },
-            focus: { type: "string" },
-            max_tokens: { type: "number" },
-            quality_mode: {
-              type: "string",
-              enum: ["standard", "high"],
-              description: "standard preserves the existing review contract; high runs the fail-closed quality.v1 pipeline. Defaults to standard."
-            },
-            branches: {
-              type: "array",
-              description: "2–3 independent review dimensions for concurrent fan-out review. Each branch shares the same job_id/files/focus but adds its own focus.",
-              items: {
-                type: "object",
-                properties: {
-                  id: { type: "string" },
-                  focus: { type: "string" },
-                  max_tokens: { type: "number" }
-                },
-                required: ["id", "focus"]
-              }
-            },
-            aggregate: {
-              type: "string",
-              enum: ["strong_review", "none"],
-              description: "When branches are provided, controls whether a synthesis reviewer runs after all branches complete. Defaults to strong_review."
-            },
-            deadline_ms: {
-              type: "number",
-              description: "Shared deadline for all branches and the reviewer. Default 90s, max 300s."
-            }
-          }
-        }
-      },
-      {
         name: "search",
         description:
           "Zero-LLM repository search using rg when available. dirs may contain sandbox directories or files; returns bounded file/line matches inside SANDBOX_ROOT.",
@@ -1765,7 +1576,7 @@ export function createCodexWorkerServer(): Server {
       {
         name: "diff_digest",
         description:
-          "Digest the current git diff into changed files, file-level risk, hunk headers, and optional cheap red-team review.",
+          "Digest the current git diff into deterministic changed-file, file-risk, and hunk-header evidence. Optional worker-LLM red-team judgment requires WORKER_LITE_LLM=1.",
         inputSchema: {
           type: "object",
           properties: {
@@ -1838,7 +1649,7 @@ export function createCodexWorkerServer(): Server {
       {
         name: "draft",
         description:
-          "Draft commit messages, PR descriptions, changelog notes, or release notes from the current diff using the cheap review lane. Rejected when WORKER_LITE_LLM=0; draft in the main thread from diff_digest evidence.",
+          "Legacy worker-LLM drafting lane. Disabled by default; set WORKER_LITE_LLM=1 explicitly to opt in. Otherwise draft in the main model from diff_digest evidence.",
         inputSchema: {
           type: "object",
           properties: {
@@ -2007,336 +1818,6 @@ export function createCodexWorkerServer(): Server {
         return okJson(result);
       }
 
-      if (name === "analyze") {
-        const prompt = typeof toolArgs.prompt === "string" ? toolArgs.prompt : "";
-        if (!prompt.trim()) {
-          return reject("analyze", "analysis", "prompt is required", "Provide a non-empty prompt, or use read_pack for zero-LLM file context first.", [
-            "read_pack"
-          ]);
-        }
-        const files = Array.isArray(toolArgs.files) ? toolArgs.files.map(String) : [];
-        const maxTokens = typeof toolArgs.max_tokens === "number" ? toolArgs.max_tokens : undefined;
-        const qualityMode = toolArgs.quality_mode === undefined ? "standard" : toolArgs.quality_mode;
-        if (qualityMode !== "standard" && qualityMode !== "high") {
-          return reject("analyze", "analysis", "quality_mode must be standard or high", "Use quality_mode=standard or quality_mode=high.", [
-            "analyze"
-          ]);
-        }
-
-        if (qualityMode === "high") {
-          if (Array.isArray(toolArgs.branches) && toolArgs.branches.length > 0) {
-            return reject(
-              "analyze",
-              "analysis",
-              "quality_mode=high defines its own fixed branches",
-              "Remove branches and aggregate; the quality.v1 coordinator supplies three fixed roles.",
-              ["analyze"]
-            );
-          }
-          try {
-            const evidence = buildEvidencePack(files);
-            const result = await runHighQualityAnalyze({
-              prompt,
-              evidenceContent: evidence.content,
-              evidenceTruncated: evidence.truncated
-            });
-            metricExtra = { quality_mode: "high", quality_status: result.status, quality_reason_codes: result.reason_codes };
-            if (result.reason_codes.some((code) => code === "quality_fanout_disabled" || code === "quality_concurrency_below_3")) {
-              return reject(
-                "analyze",
-                "analysis",
-                "quality_mode=high prerequisites are not configured; set WORKER_FANOUT_ENABLED=1, WORKER_LITE_MAX_CONCURRENCY>=3, and WORKER_GLOBAL_LITE_MAX>=3, then retry",
-                "Either enable the quality.v1 prerequisites, or omit quality_mode to use the available standard analysis lane.",
-                ["analyze"]
-              );
-            }
-            return okJson(result);
-          } catch (error: any) {
-            const msg = error instanceof Error ? error.message : String(error);
-            if (isRejectableInputError(msg)) {
-              return reject("analyze", "analysis", msg, "Narrow the file list or use read_pack on fewer, smaller files.", ["read_pack", "search"]);
-            }
-            return fail("analyze", "analysis", error);
-          }
-        }
-
-        // Fan-out path: if branches are provided, run concurrent analysis.
-        const branches = toolArgs.branches;
-        if (Array.isArray(branches) && branches.length > 0) {
-          const availabilityError = checkFanoutAvailability(branches);
-          if (availabilityError) {
-            return reject("analyze", "analysis", availabilityError, "Set WORKER_FANOUT_ENABLED=1 to enable fan-out, or omit branches for single-path analysis.", [
-              "read_pack"
-            ]);
-          }
-          try {
-            const validatedBranches = validateBranches(branches);
-            const evidence = buildEvidencePack(files);
-            validateFanoutEvidence(evidence);
-            const aggregate =
-              toolArgs.aggregate === "none" ? "none" as const
-              : toolArgs.aggregate === "strong_review" ? "strong_review" as const
-              : "strong_review" as const;
-            const deadlineMs = typeof toolArgs.deadline_ms === "number" ? toolArgs.deadline_ms : undefined;
-            const fanoutResult = await fanoutCoordinator.runAnalyze(prompt, evidence, validatedBranches, {
-              aggregate,
-              deadline_ms: deadlineMs
-            });
-            rememberReceipt(fanoutResult);
-            return okJson(fanoutResult);
-          } catch (error: any) {
-            if (error instanceof FanoutValidationError) {
-              return reject("analyze", "analysis", error.message, "Fix the branch/evidence validation error and retry.", [
-                "read_pack"
-              ]);
-            }
-            const msg = error instanceof Error ? error.message : String(error);
-            if (isRejectableInputError(msg)) {
-              return reject("analyze", "analysis", msg, "Correct the file paths or narrow the evidence set.", ["read_pack", "search"]);
-            }
-            return fail("analyze", "analysis", error);
-          }
-        }
-
-        if (!LITE_LLM_ENABLED) {
-          metricExtra = { lite_llm: "disabled" };
-          if (files.length === 0) {
-            return reject("analyze", "analysis", "WORKER_LITE_LLM=0 and no files given", "Use read_pack or search directly for evidence; analysis conclusions belong to the main thread.", [
-              "read_pack",
-              "search"
-            ]);
-          }
-          const pack = buildContextPack({
-            paths: files,
-            task: prompt,
-            prompt,
-            max_files: Math.min(files.length, 20),
-            max_bytes_per_file: 8_000
-          });
-          const payload = {
-            ...liteDisabledMarker(),
-            fallback_used: "read_pack",
-            prompt,
-            context_pack: {
-              file_count: pack.file_count,
-              packed_bytes: pack.packed_bytes,
-              truncated: pack.truncated,
-              receipt: pack.receipt
-            }
-          };
-          const result = attachReceipt(payload, { tool: "analyze", category: "analysis", input: toolArgs, output: payload });
-          rememberReceipt(result);
-          return okJson(result);
-        }
-
-        try {
-          const answer = await analyzeDirect(prompt, files, maxTokens);
-          return textResponse(answer);
-        } catch (error: any) {
-          const msg = error instanceof Error ? error.message : String(error);
-          if (isRejectableInputError(msg)) {
-            return reject("analyze", "analysis", msg, "Narrow the file list or use read_pack on fewer, smaller files.", ["read_pack", "search"]);
-          }
-          return fail("analyze", "analysis", error);
-        }
-      }
-
-      if (name === "review") {
-        const jobId = typeof toolArgs.job_id === "string" ? toolArgs.job_id : "";
-        const job = jobId ? jobs.get(jobId) : undefined;
-        if (jobId && !job) {
-          return reject(
-            "review",
-            "review",
-            "Job not found or expired",
-            "Pass files for review, rerun diff_digest, or rerun start and review the new job_id.",
-            ["diff_digest", "read_pack", "start"]
-          );
-        }
-        const files = Array.isArray(toolArgs.files) ? toolArgs.files.map(String) : [];
-        if (!job && files.length === 0) {
-          return reject("review", "review", "review requires job_id or files", "Pass either a valid job_id or a non-empty files list.", [
-            "diff_digest",
-            "read_pack"
-          ]);
-        }
-        const qualityMode = toolArgs.quality_mode === undefined ? "standard" : toolArgs.quality_mode;
-        if (qualityMode !== "standard" && qualityMode !== "high") {
-          return reject("review", "review", "quality_mode must be standard or high", "Use quality_mode=standard or quality_mode=high.", [
-            "review"
-          ]);
-        }
-        const fileReview = job ? { diff: undefined, files: [] } : reviewDiffForFiles(files);
-
-        if (qualityMode === "high") {
-          if (Array.isArray(toolArgs.branches) && toolArgs.branches.length > 0) {
-            return reject(
-              "review",
-              "review",
-              "quality_mode=high defines its own fixed branches",
-              "Remove branches and aggregate; the quality.v1 coordinator supplies three fixed roles.",
-              ["review"]
-            );
-          }
-          try {
-            const sharedEvidence = buildEvidencePack(fileReview.files.length > 0 ? fileReview.files : files);
-            const result = await runHighQualityReview({
-              task: typeof toolArgs.focus === "string" ? toolArgs.focus : `Review job ${jobId || "files"}`,
-              diff: job?.result.diff ?? fileReview.diff,
-              checks: job?.result.checks,
-              evidenceContent: sharedEvidence.content,
-              evidenceTruncated: sharedEvidence.truncated
-            });
-            metricExtra = { quality_mode: "high", quality_status: result.status, quality_reason_codes: result.reason_codes };
-            if (result.reason_codes.some((code) => code === "quality_fanout_disabled" || code === "quality_concurrency_below_3")) {
-              return reject(
-                "review",
-                "review",
-                "quality_mode=high prerequisites are not configured; set WORKER_FANOUT_ENABLED=1, WORKER_LITE_MAX_CONCURRENCY>=3, and WORKER_GLOBAL_LITE_MAX>=3, then retry",
-                "Either enable the quality.v1 prerequisites, or omit quality_mode to use the available standard review lane.",
-                ["review"]
-              );
-            }
-            return okJson(result);
-          } catch (error: any) {
-            const msg = error instanceof Error ? error.message : String(error);
-            if (isRejectableInputError(msg)) {
-              return reject("review", "review", msg, "Narrow the file list or use diff_digest on a focused diff.", ["diff_digest", "read_pack"]);
-            }
-            return fail("review", "review", error);
-          }
-        }
-
-        // Fan-out path: if branches are provided, run concurrent review.
-        const branches = toolArgs.branches;
-        if (Array.isArray(branches) && branches.length > 0) {
-          const availabilityError = checkFanoutAvailability(branches);
-          if (availabilityError) {
-            return reject("review", "review", availabilityError, "Set WORKER_FANOUT_ENABLED=1 to enable fan-out, or omit branches for single-path review.", [
-              "diff_digest", "read_pack"
-            ]);
-          }
-          try {
-            const validatedBranches = validateBranches(branches);
-            const sharedEvidence = buildEvidencePack(fileReview.files.length > 0 ? fileReview.files : files);
-            validateFanoutEvidence(sharedEvidence);
-            const aggregate =
-              toolArgs.aggregate === "none" ? "none" as const
-              : toolArgs.aggregate === "strong_review" ? "strong_review" as const
-              : "strong_review" as const;
-            const deadlineMs = typeof toolArgs.deadline_ms === "number" ? toolArgs.deadline_ms : undefined;
-            const fanoutResult = await fanoutCoordinator.runReview(
-              {
-                task: typeof toolArgs.focus === "string" ? toolArgs.focus : `Review job ${jobId || "files"}`,
-                diff: job?.result.diff ?? fileReview.diff,
-                checks: job?.result.checks,
-                evidenceContent: sharedEvidence.content,
-                evidenceFileCount: sharedEvidence.fileCount,
-                evidenceTotalBytes: sharedEvidence.totalBytes,
-                evidenceTruncated: sharedEvidence.truncated
-              },
-              validatedBranches,
-              { aggregate, deadline_ms: deadlineMs }
-            );
-            rememberReceipt(fanoutResult);
-            return okJson(fanoutResult);
-          } catch (error: any) {
-            if (error instanceof FanoutValidationError) {
-              return reject("review", "review", error.message, "Fix the branch/evidence validation error and retry.", [
-                "diff_digest", "read_pack"
-              ]);
-            }
-            const msg = error instanceof Error ? error.message : String(error);
-            if (isRejectableInputError(msg)) {
-              return reject("review", "review", msg, "Correct the file paths or narrow the evidence set.", ["diff_digest", "read_pack"]);
-            }
-            return fail("review", "review", error);
-          }
-        }
-
-        if (!LITE_LLM_ENABLED) {
-          metricExtra = { lite_llm: "disabled" };
-          let payload: Record<string, unknown>;
-          let artifactRefs: string[] = [];
-          let receiptOutput: unknown;
-          let receiptTruncated = false;
-          if (job) {
-            const diffDigest = storedJobDiffDigest(job);
-            artifactRefs = diffDigest.artifactRefs;
-            receiptOutput = job.result.diff || diffDigest.summary;
-            receiptTruncated = diffDigest.truncated;
-            payload = {
-              ...liteDisabledMarker(),
-              fallback_used: "diff_digest",
-              job_id: job.id,
-              job_status: job.status,
-              changed_files: job.result.changed_files || [],
-              checks: job.result.checks || [],
-              diff_digest: diffDigest.summary
-            };
-          } else {
-            const hunkHeaders = (fileReview.diff || "").match(/^@@.*@@.*$/gm)?.slice(0, 12) || [];
-            payload = {
-              ...liteDisabledMarker(),
-              fallback_used: "local_diff_summary",
-              files: fileReview.files.length > 0 ? fileReview.files : files,
-              diff_bytes: Buffer.byteLength(fileReview.diff || "", "utf8"),
-              hunk_headers: hunkHeaders
-            };
-            receiptOutput = payload;
-          }
-          const result = attachReceipt(payload, {
-            tool: "review",
-            category: "review",
-            input: toolArgs,
-            output: receiptOutput,
-            artifactRefs,
-            truncated: receiptTruncated
-          });
-          rememberReceipt(result);
-          return okJson(result);
-        }
-
-        let raw: string;
-        try {
-          raw = await reviewDirect({
-            diff: job?.result.diff ?? fileReview.diff,
-            checks: job?.result.checks,
-            files: fileReview.files,
-            focus: typeof toolArgs.focus === "string" ? toolArgs.focus : undefined,
-            maxTokens: typeof toolArgs.max_tokens === "number" ? toolArgs.max_tokens : undefined
-          });
-        } catch (error: any) {
-          const msg = error instanceof Error ? error.message : String(error);
-          if (isRejectableInputError(msg)) {
-            return reject("review", "review", msg, "Narrow the file list or use diff_digest on a focused diff.", ["diff_digest", "read_pack"]);
-          }
-          return fail("review", "review", error);
-        }
-        try {
-          const result = attachReceipt(JSON.parse(raw), {
-            tool: "review",
-            category: "review",
-            input: toolArgs,
-            output: raw
-          });
-          rememberReceipt(result);
-          return okJson(result);
-        } catch {
-          const result = attachReceipt(
-            { verdict: "unparsed", issues: [], summary: raw },
-            {
-              tool: "review",
-              category: "review",
-              input: toolArgs,
-              output: raw
-            }
-          );
-          rememberReceipt(result);
-          return okJson(result);
-        }
-      }
-
       if (name === "search") {
         const pattern = typeof toolArgs.pattern === "string" ? toolArgs.pattern : "";
         const dirs = validateSearchPaths(toolArgs.dirs);
@@ -2357,7 +1838,7 @@ export function createCodexWorkerServer(): Server {
           searchResult.degraded = true;
           searchResult.degradation_reason = "no_matches";
         }
-        const result = attachReceipt({ ...searchResult }, { tool: "search", category: "search", input: toolArgs, output: searchResult });
+        const result = deliverSearchResult(toolArgs, searchResult);
         rememberReceipt(result);
         return okJson(result);
       }
@@ -2448,7 +1929,6 @@ export function createCodexWorkerServer(): Server {
         appendToolMetric(name, category, metricStatus, {
           ...reliabilityExtra,
           ...metricExtra,
-          ...(!LITE_LLM_ENABLED && (name === "analyze" || name === "review") ? { lite_llm: "disabled" } : {}),
           ...(controlOutcome.errorClass ? { failure_class: controlOutcome.errorClass } : {}),
           ...(controlOutcome.errorClass ? { tool_error_class: controlOutcome.errorClass } : {}),
           ...(controlOutcome.circuitOpened ? { circuit_opened: true } : {}),

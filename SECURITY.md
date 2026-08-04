@@ -16,12 +16,20 @@ Open a private security advisory on GitHub, or contact the maintainer through th
 - Prefer `scoped_patch` for write tasks so out-of-scope edits are marked failed.
 - Keep `ALLOW_BYPASS_PERMISSIONS` disabled unless you fully trust the caller.
 - Use HTTPS provider endpoints outside private networks.
-- Treat third-party model gateways as data processors for the prompts and files you send.
+- Treat third-party model gateways as data processors for the prompts and files
+  you send through `start`, a configured semantic gate, or the legacy worker-LLM
+  lane.
 
 ## Built-In Guardrails
 
 - Secret redaction for common API key variables and bearer tokens.
 - Realpath-based sandbox checks.
 - Optional scoped patch enforcement.
-- Read-only `analyze` path for summary/classification tasks.
+- Deterministic `search`, `read_pack`, `diff_digest`, and `shell` evidence
+  paths; analysis, judgment, and code review remain in the main model by default.
+- Public evidence routing is limited to deterministic tools such as
+  `read_pack`, `diff_digest`, and `get_artifact_slice`; historical
+  quality/fan-out modules have no public MCP entry point.
+- Semantic verification is a separate post-execution gate and does not enable
+  general worker analysis or review.
 - Optional git worktree isolation for parallel jobs.

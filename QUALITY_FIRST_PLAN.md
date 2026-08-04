@@ -1,13 +1,19 @@
-# Quality-first analyze/review
+# Historical internal quality/fan-out experiments
 
-`quality_mode:"high"` is an opt-in, fail-closed path for `analyze` and `review`.
-It is not enabled by default and it does not claim that thinking or model agreement
-is statistically reliable. Default routing may change only after the separate
-Trial A -> B -> C qualification gate passes on real, frozen, blindly scored data.
+> Internal and historical only. These modules are retained for evaluation and
+> development, but they have no public MCP entry point. Public callers collect
+> evidence with `read_pack`, `diff_digest`, and `get_artifact_slice`; the main
+> model performs analysis, judgment, and code review. `WORKER_LITE_LLM` does not
+> expose these experiments. The separate `semantic_gate` control is unrelated.
+
+The internal `quality_mode:"high"` experiment is fail-closed. It does not claim
+that thinking or model agreement is statistically reliable, and qualification
+does not authorize a public MCP route.
 
 ## Runtime contract
 
-- `standard` preserves the existing single-call and `fanout.v1` behavior.
+- In the internal evaluation harness, `standard` preserves the historical
+  single-call and `fanout.v1` behavior.
 - `high` supplies three fixed roles, uses exactly three configured branch targets,
   and sends their complete structured claims to a distinct reviewer target.
 - High mode bypasses the Lite cache, requests target-specific thinking, rejects
@@ -27,9 +33,10 @@ Trial A -> B -> C qualification gate passes on real, frozen, blindly scored data
 
 ## Target configuration
 
-Set `WORKER_QUALITY_TARGETS_FILE` to an untracked JSON file. API keys stay in
-environment variables referenced by `api_key_env`; key values are never loaded
-into the serializable configuration.
+For internal evaluation only, set `WORKER_QUALITY_TARGETS_FILE` to an untracked
+JSON file. API keys stay in environment variables referenced by `api_key_env`;
+key values are never loaded into the serializable configuration. This setting
+does not add an MCP tool.
 
 ```json
 {
@@ -61,6 +68,9 @@ WORKER_GLOBAL_ACQUIRE_TIMEOUT_MS=15000
 WORKER_FANOUT_TIMEOUT_MS=270000
 ```
 
+These settings are retained for internal test harnesses and historical
+reproduction only; they do not expose quality or fan-out through MCP.
+
 ## Qualification data
 
 Run the versioned quality gate with one JSON object per line:
@@ -75,7 +85,8 @@ npm run eval:quality -- --input .eval/quality/pairs.jsonl
 
 Trial A compares thinking off/on, Trial B compares the winning single path with
 the heterogeneous pipeline, and Trial C compares direct premium output with the
-complete production path. Analyze and review are gated separately. Official
+complete legacy path. Analyze and review are evaluated separately; no
+analysis/review worker-share metric is a qualification target. Official
 looks are 200 pairs/category at alpha 0.01 and one optional 500-pair/category
 look at alpha 0.015. The gate resamples whole repositories, requires both
 categories' one-sided lower bound to be greater than zero, and fails immediately
@@ -87,4 +98,5 @@ blind.
 Exit codes are `0` passed, `2` failed/invalid, and `4` inconclusive. Passing code
 tests or an engineering pilot is not a quality certificate; real frozen tasks,
 blind evaluation, provider exports, isolated sessions, and retained evidence are
-still required.
+still required for internal conclusions. They do not authorize or create a
+public MCP entry point.

@@ -18,6 +18,11 @@ worker-quality-targets*.json
 quality-targets.local.json
 .playwright-cli/
 .fix-backups/
+.workbuddy/
+.uploads/
+.trae-html-share-packages/
+.worker-circuit-state-trae.json
+.local-state*.json
 /codex-guard-status.json
 
 # Local working notes may contain copied terminal output or configuration context.

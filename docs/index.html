@@ -199,8 +199,8 @@
       <div class="wrap hero">
         <h1>IDE Super Worker</h1>
         <p class="lead">
-          Stop feeding Codex giant diffs. Delegate expensive code-reading and repair loops to a cheaper
-          async worker, then return only compact, verified results.
+          Keep analysis, judgment, and code review in Codex. Delegate deterministic evidence collection and
+          lower-cost repair loops to an async worker, then return compact, auditable results.
         </p>
         <div class="actions">
           <a class="button" href="https://github.com/luzmatrix002/ide-super-worker">View on GitHub</a>
@@ -217,12 +217,12 @@
           <div class="diagram" aria-label="Codex delegates to worker, worker calls cheap gateway, worker returns compact checks">
             <div class="node">
               <strong>Codex</strong>
-              <span>Plans, reviews, decides.</span>
+              <span>Plans, analyzes, reviews, decides.</span>
             </div>
             <div class="arrow">-&gt;</div>
             <div class="node">
               <strong>MCP Worker</strong>
-              <span>Runs Claude Code in the background.</span>
+              <span>Collects evidence and runs tasks in the background.</span>
             </div>
             <div class="arrow">-&gt;</div>
             <div class="node">
@@ -230,7 +230,11 @@
               <span>Handles bulky model tokens.</span>
             </div>
           </div>
-          <div class="callout">Back to Codex: changed files, checks, logs, and optional diff.</div>
+          <div class="callout">
+            Back to Codex: changed files, checks, logs, and optional diff. Use <code>read_pack</code>,
+            <code>diff_digest</code>, and <code>get_artifact_slice</code> for deterministic evidence;
+            Codex keeps analysis, judgment, and code review. Historical quality/fan-out modules have no public MCP entry.
+          </div>
         </div>
       </section>
 
@@ -264,7 +268,7 @@
             </article>
             <article class="card">
               <h3>Verification First</h3>
-              <p>Scoped patch checks, test commands, deterministic assessment, and bounded auto-revise keep results auditable.</p>
+              <p>Scoped patch checks, test commands, deterministic outcome checks, and bounded auto-revise keep results auditable.</p>
             </article>
           </div>
         </div>
@@ -288,16 +292,16 @@ npm run smoke</code></pre>
           <h2>Best Fit</h2>
           <div class="grid">
             <article class="card">
-              <h3>Large Code Reads</h3>
-              <p>Move repository exploration out of the premium orchestration context.</p>
+              <h3>Large Evidence Packs</h3>
+              <p>Collect repository evidence deterministically before Codex analyzes it.</p>
             </article>
             <article class="card">
               <h3>Scoped Fixes</h3>
               <p>Let the worker patch and run checks while Codex keeps the decision surface small.</p>
             </article>
             <article class="card">
-              <h3>Read-Only Summaries</h3>
-              <p>Use the lite <code>analyze</code> tool when a full Claude Code loop would be overkill.</p>
+              <h3>Read-Only Evidence</h3>
+              <p>Use <code>read_pack</code> to package deterministic evidence for the Codex main model.</p>
             </article>
             <article class="card">
               <h3>Zero-LLM Search</h3>

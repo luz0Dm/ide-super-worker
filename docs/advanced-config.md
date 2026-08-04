@@ -14,19 +14,31 @@ WORKER_PRICE_CACHE=0.027
 WORKER_PRICE_TABLE={"deepseek-v4-pro":{"input":0.55,"output":2.19}}
 ```
 
-## Deterministic-Only Mode
+## Default Evidence-Only Mode
 
-Set this when the main Codex model should retain judgment and the worker should return only deterministic evidence. The default is `1` for backward compatibility.
+The worker defaults to deterministic evidence collection so the main Codex model retains analysis, judgment, and code review.
 
 ```env
 WORKER_LITE_LLM=0
 ```
 
-With `0`, standard `analyze`/`review` return evidence packs, failed `shell` digests are deterministic, job `failure_digest` and diff red-team judgment are skipped, and `draft` is rejected. Explicit `quality_mode:"high"`, fan-out, the semantic reviewer, and `start` are unaffected.
+With `0` (including when the variable is unset), callers collect evidence with `read_pack`, `diff_digest`, and `get_artifact_slice`; failed `shell` digests are deterministic, job `failure_digest` and diff red-team judgment are skipped, and `draft` is rejected. Setting `WORKER_LITE_LLM=1` and restarting the MCP worker enables only the remaining gateway-backed failure diagnosis, diff red-team judgment, and `draft` features. Historical quality/fan-out modules have no public MCP entry point. The `start` execution path is unaffected.
+
+`semantic_gate` is independent of `WORKER_LITE_LLM`: it is a separate post-execution verification control and does not enable general worker analysis or code review. Callers may configure it explicitly, and documented tool-error self-heal may raise later `start` calls to `warn`.
+
+## MCP Lifecycle
+
+The stdio server stays connected while its client is open. Idle shutdown is opt-in:
+
+```env
+WORKER_IDLE_EXIT_MS=0
+```
+
+Set a positive millisecond value only when a client intentionally wants idle worker processes to exit. Each MCP request resets an enabled deadline; `0` avoids stale clients receiving `Transport closed` after an otherwise healthy idle period.
 
 ## Lite Model Cache
 
-Use these when `analyze`, `review`, or failure digests call a cheap gateway model often enough to benefit from a small disk cache.
+Use these only with explicitly enabled gateway-backed features, such as failure digests, diff red-team judgment, or `draft`, when calls are frequent enough to benefit from a small disk cache.
 
 ```env
 WORKER_LITE_MODEL=deepseek-v4-flash
@@ -49,15 +61,18 @@ WORKER_ROUTING_HASH_KEY=
 WORKER_COMMAND_FINGERPRINT_KEY=
 ```
 
-Until a real seven-day baseline exists, routing share, start share, latency, queue,
+Until a real seven-day baseline exists, deterministic-tool routing share, start share, latency, queue,
 retry, fallback, and circuit metrics are warnings/observations rather than health-gate
 failures. Canary failure, telemetry incompleteness, sampled execution-error rates,
 required audit evidence, and oversized receipts without artifact references remain
 eligible to fail the health gate.
 
+Analysis/review worker-share is not a routing target: those judgments belong to
+the main model in the default evidence-only mode.
+
 ## Outcome V1 Semantic Review
 
-`semantic_gate=required` performs one independent, cache-free review after executor, scope, and checks pass. Missing configuration, timeout, invalid JSON, risky verdicts, or truncated evidence produce `outcome.status="needs_evidence"`; they never silently count as accepted.
+`semantic_gate=required` is a separate explicit option that performs one independent, cache-free verification after executor, scope, and checks pass. Missing configuration, timeout, invalid JSON, risky verdicts, or truncated evidence produce `outcome.status="needs_evidence"`; they never silently count as accepted. It does not create a general analysis or code-review MCP entry point.
 
 ```env
 WORKER_SEMANTIC_REVIEW_MODEL=deepseek-v4-pro
@@ -101,7 +116,7 @@ WORKER_SEMANTIC_GATE=off
 WORKER_TOOL_BUDGET=20
 ```
 
-When the MCP server is running, tool error review can enable escalation self-heal defaults for later `start` calls: stricter reliability tier, warning policy, semantic review warnings, auto-revise, and at least one revise pass.
+When the MCP server is running, tool error review can enable escalation self-heal defaults for later `start` calls: stricter reliability tier, warning policy, `semantic_gate=warn`, auto-revise, and at least one revise pass. Explicit `start` arguments still win over these defaults.
 
 ## Tool Error Circuit Breaker
 
